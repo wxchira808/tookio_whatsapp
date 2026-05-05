@@ -22,16 +22,23 @@ def verify_webhook_token(verify_token, hub_challenge):
 	Returns:
 		str: Challenge if valid, None otherwise
 	"""
-	# Get stored verify token (you set this in WhatsApp Integration)
+	# First, try a global token from site config
 	stored_token = frappe.conf.get("whatsapp_verify_token")
-	
-	if not stored_token:
-		frappe.log_error("WhatsApp verify token not configured", "Set whatsapp_verify_token in site config")
-		return None
-	
-	if verify_token == stored_token:
+	if stored_token and verify_token == stored_token:
 		return hub_challenge
-	
+
+	# Fallback: check any configured WhatsApp Integration records
+	try:
+		integrations = frappe.get_all("WhatsApp Integration", fields=["name", "verify_token"]) or []
+		for it in integrations:
+			it_token = it.get("verify_token")
+			if it_token and verify_token == it_token:
+				return hub_challenge
+	except Exception as e:
+		frappe.log_error(f"Error checking WhatsApp Integration tokens: {e}", "whatsapp_webhook.verify")
+
+	# No matching token found
+	frappe.log_error("WhatsApp verify token not configured or invalid", "Set whatsapp_verify_token in site config or add a Verify Token on the WhatsApp Integration")
 	return None
 
 
@@ -96,15 +103,79 @@ def webhook():
 		# Get raw payload for signature verification
 		payload = request.get_data()
 		
-		# Get app secret - try from config first, then from WhatsApp Integration
+		# Get app secret - try global config first. If not present, attempt
+		# to locate the correct integration's app_secret using the payload
+		# metadata (phone_number_id) or by trying enabled integrations.
 		app_secret = frappe.conf.get("whatsapp_app_secret")
-		
-		if not app_secret:
-			frappe.log_error("WhatsApp app secret not configured", "Set whatsapp_app_secret in site config")
-			return {"status": "error"}, 500
-		
-		if not verify_signature(signature, payload, app_secret):
-			frappe.logger().warning("Invalid signature received")
+		verified = False
+		integration_used = None
+
+		if app_secret:
+			try:
+				if verify_signature(signature, payload, app_secret):
+					verified = True
+			except Exception as e:
+				frappe.log_error("Error verifying signature with global app secret", str(e))
+
+		# If global secret not available or didn't verify, try to extract
+		# phone_number_id from the payload to find the matching integration.
+		if not verified:
+			try:
+				parsed = json.loads(payload.decode() if isinstance(payload, (bytes, bytearray)) else payload)
+				phone_number_id = None
+				for entry in parsed.get("entry", []) or []:
+					for change in entry.get("changes", []) or []:
+						value = change.get("value", {})
+						meta = value.get("metadata", {})
+						if meta.get("phone_number_id"):
+							phone_number_id = meta.get("phone_number_id")
+							break
+					if phone_number_id:
+						break
+
+				if phone_number_id:
+					integrations = frappe.get_list(
+						"WhatsApp Integration",
+						filters={"phone_number_id": phone_number_id, "enabled": 1},
+						fields=["name"],
+						limit=1,
+					) or []
+
+					if integrations:
+						try:
+							it_doc = frappe.get_doc("WhatsApp Integration", integrations[0].name)
+							it_secret = it_doc.get("app_secret")
+							if it_secret and verify_signature(signature, payload, it_secret):
+								verified = True
+								integration_used = it_doc.name
+						except Exception as e:
+							frappe.log_error("Error loading WhatsApp Integration for signature check", str(e))
+
+			except Exception as e:
+				# Parsing failed; continue to broader fallback below
+				frappe.log_error("Failed to parse webhook JSON for app_secret lookup", str(e))
+
+		# As a last resort, try all enabled integrations that have an app_secret
+		if not verified:
+			try:
+				integrations = frappe.get_all("WhatsApp Integration", filters={"enabled": 1}, fields=["name", "app_secret"]) or []
+				for it in integrations:
+					it_secret = it.get("app_secret")
+					if not it_secret:
+						continue
+					try:
+						if verify_signature(signature, payload, it_secret):
+							verified = True
+							integration_used = it.get("name")
+							break
+					except Exception:
+						# ignore and continue trying others
+						continue
+			except Exception as e:
+				frappe.log_error("Error checking integration app_secrets for signature", str(e))
+
+		if not verified:
+			frappe.logger().warning("Invalid signature received or app secret not configured")
 			return {"status": "unauthorized"}, 401
 		
 		# Parse JSON
