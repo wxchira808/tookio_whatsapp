@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 import requests
+import time
 import frappe
 from frappe import logger
 
@@ -34,48 +35,67 @@ class GeminiClient:
 		Returns:
 			str: Generated text response, or None if error
 		"""
-		try:
-			url = f"{self.base_url}/{self.model}:generateContent?key={self.api_key}"
-			
-			payload = {
-				"contents": [
-					{"parts": [{"text": prompt}]}
-				],
-				"generationConfig": {
-					"maxOutputTokens": max_tokens,
-					"temperature": self.temperature
-				}
+		# Retry on rate limits and server errors with exponential backoff
+		max_attempts = 4
+		backoff_base = 1.0
+		url = f"{self.base_url}/{self.model}:generateContent?key={self.api_key}"
+		payload = {
+			"contents": [
+				{"parts": [{"text": prompt}]}
+			],
+			"generationConfig": {
+				"maxOutputTokens": max_tokens,
+				"temperature": self.temperature
 			}
-			
-			headers = {
-				"Content-Type": "application/json"
-			}
-			
-			response = requests.post(url, json=payload, headers=headers, timeout=timeout)
-			response.raise_for_status()
-			
-			result = response.json()
-			
-			# Extract text from response
-			if "candidates" in result and len(result["candidates"]) > 0:
-				candidate = result["candidates"][0]
-				if "content" in candidate and "parts" in candidate["content"]:
-					parts = candidate["content"]["parts"]
-					if len(parts) > 0 and "text" in parts[0]:
-						return parts[0]["text"]
-			
-			frappe.log_error("Gemini returned unexpected response format", str(result))
-			return None
-			
-		except requests.exceptions.Timeout:
-			frappe.log_error("Gemini API timeout", f"Request took longer than {timeout}s")
-			return None
-		except requests.exceptions.RequestException as e:
-			frappe.log_error("Gemini API request failed", str(e))
-			return None
-		except Exception as e:
-			frappe.log_error("Gemini API error", str(e))
-			return None
+		}
+		headers = {"Content-Type": "application/json"}
+
+		for attempt in range(1, max_attempts + 1):
+			try:
+				response = requests.post(url, json=payload, headers=headers, timeout=timeout)
+				# Raise for status so we can catch HTTP errors
+				response.raise_for_status()
+
+				result = response.json()
+				# Extract text from response
+				if "candidates" in result and len(result["candidates"]) > 0:
+					candidate = result["candidates"][0]
+					if "content" in candidate and "parts" in candidate["content"]:
+						parts = candidate["content"]["parts"]
+						if len(parts) > 0 and "text" in parts[0]:
+							return parts[0]["text"]
+				# Unexpected format
+				frappe.log_error("Gemini returned unexpected response format", str(result))
+				return None
+
+			except requests.exceptions.RequestException as e:
+				# Try to get status code and body if available
+				status = None
+				body = None
+				if hasattr(e, 'response') and e.response is not None:
+					status = getattr(e.response, 'status_code', None)
+					try:
+						body = e.response.text
+					except Exception:
+						body = None
+
+				# Log detailed info
+				frappe.log_error(
+					"Gemini API request failed",
+					f"attempt={attempt} status={status} error={str(e)} body={body}",
+				)
+
+				# Retry on 429 or 5xx server errors
+				if status in (429, 500, 502, 503, 504) and attempt < max_attempts:
+					sleep = backoff_base * (2 ** (attempt - 1))
+					time.sleep(sleep)
+					continue
+				# No retry, return None
+				return None
+
+			except Exception as e:
+				frappe.log_error("Gemini API error", str(e))
+				return None
 	
 	def generate_response_with_image(self, text_prompt, image_id, access_token, max_tokens=150, timeout=30):
 		"""
