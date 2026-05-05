@@ -103,12 +103,11 @@ def webhook():
 		# Get raw payload for signature verification
 		payload = request.get_data()
 		
-		# Get app secret - try global config first. If not present, attempt
-		# to locate the correct integration's app_secret using the payload
-		# metadata (phone_number_id) or by trying enabled integrations.
+		# Get app secret - try global config first, then the integration that
+		# matches the incoming phone_number_id. This avoids permission checks in
+		# the guest webhook request path.
 		app_secret = frappe.conf.get("whatsapp_app_secret")
 		verified = False
-		integration_used = None
 
 		if app_secret:
 			try:
@@ -117,8 +116,6 @@ def webhook():
 			except Exception as e:
 				frappe.log_error("Error verifying signature with global app secret", str(e))
 
-		# If global secret not available or didn't verify, try to extract
-		# phone_number_id from the payload to find the matching integration.
 		if not verified:
 			try:
 				parsed = json.loads(payload.decode() if isinstance(payload, (bytes, bytearray)) else payload)
@@ -134,45 +131,18 @@ def webhook():
 						break
 
 				if phone_number_id:
-					integrations = frappe.get_list(
+					integration = frappe.db.get_value(
 						"WhatsApp Integration",
-						filters={"phone_number_id": phone_number_id, "enabled": 1},
-						fields=["name"],
-						limit=1,
-					) or []
+						{"phone_number_id": phone_number_id, "enabled": 1},
+						["name", "app_secret"],
+						as_dict=True,
+					)
 
-					if integrations:
-						try:
-							it_doc = frappe.get_doc("WhatsApp Integration", integrations[0].name)
-							it_secret = it_doc.get("app_secret")
-							if it_secret and verify_signature(signature, payload, it_secret):
-								verified = True
-								integration_used = it_doc.name
-						except Exception as e:
-							frappe.log_error("Error loading WhatsApp Integration for signature check", str(e))
+					if integration and integration.get("app_secret"):
+						verified = verify_signature(signature, payload, integration.get("app_secret"))
 
 			except Exception as e:
-				# Parsing failed; continue to broader fallback below
-				frappe.log_error("Failed to parse webhook JSON for app_secret lookup", str(e))
-
-		# As a last resort, try all enabled integrations that have an app_secret
-		if not verified:
-			try:
-				integrations = frappe.get_all("WhatsApp Integration", filters={"enabled": 1}, fields=["name", "app_secret"]) or []
-				for it in integrations:
-					it_secret = it.get("app_secret")
-					if not it_secret:
-						continue
-					try:
-						if verify_signature(signature, payload, it_secret):
-							verified = True
-							integration_used = it.get("name")
-							break
-					except Exception:
-						# ignore and continue trying others
-						continue
-			except Exception as e:
-				frappe.log_error("Error checking integration app_secrets for signature", str(e))
+				frappe.log_error("Failed to verify webhook signature from integration app secret", str(e))
 
 		if not verified:
 			frappe.logger().warning("Invalid signature received or app secret not configured")
@@ -220,18 +190,16 @@ def _queue_messages(data):
 				
 				phone_number_id = metadata.get("phone_number_id")
 				
-				# Find the integration by phone_number_id
-				integrations = frappe.get_list(
+				# Find the integration by phone_number_id without permission checks.
+				integration_name = frappe.db.get_value(
 					"WhatsApp Integration",
-					filters={"phone_number_id": phone_number_id, "enabled": 1},
-					limit=1
+					{"phone_number_id": phone_number_id, "enabled": 1},
+					"name",
 				)
-				
-				if not integrations:
+
+				if not integration_name:
 					frappe.logger().warning(f"No integration found for phone_number_id: {phone_number_id}")
 					continue
-				
-				integration_name = integrations[0].name
 				
 				# Get customer name from contacts
 				customer_name = "Unknown"
@@ -279,7 +247,7 @@ def _queue_messages(data):
 							"image_id": image_id,
 							"processed": False
 						})
-						msg_doc.insert()
+						msg_doc.insert(ignore_permissions=True)
 
 						conversation.message_count = (conversation.message_count or 0) + 1
 						conversation.last_message = text_content
