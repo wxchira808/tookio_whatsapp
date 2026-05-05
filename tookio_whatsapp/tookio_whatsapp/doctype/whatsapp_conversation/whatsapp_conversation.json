@@ -9,6 +9,7 @@
  "field_order": [
   "naming_series",
   "integration",
+  "business",
   "customer_phone",
   "column_break_1",
   "customer_name",
@@ -34,6 +35,12 @@
    "label": "Integration",
    "options": "WhatsApp Integration",
    "reqd": 1
+  },
+  {
+   "fieldname": "business",
+   "fieldtype": "Link",
+   "label": "Business",
+   "options": "Business"
   },
   {
    "fieldname": "customer_phone",

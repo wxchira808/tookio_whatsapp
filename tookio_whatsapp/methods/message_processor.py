@@ -53,6 +53,28 @@ def process_whatsapp_message(message_id):
 			conversation_history=recent_messages,
 		)
 
+		# Check if handoff is needed before calling Gemini
+		business = frappe.get_doc("Business", conversation.business) if conversation.business else None
+		handoff_reason = _check_handoff_trigger(message.text_content, business)
+
+		if handoff_reason:
+			# Trigger handoff instead of AI response
+			_create_handoff(
+				business_name=conversation.business,
+				conversation_name=conversation.name,
+				message_id=message_id,
+				reason=handoff_reason,
+				customer_message=message.text_content,
+			)
+			# Notify customer that we're getting help
+			_send_whatsapp_message(
+				phone_number_id=integration.phone_number_id,
+				to_phone=message.from_phone,
+				text="I'm getting the business owner to help with this. Please hold on...",
+				access_token=integration.access_token,
+			)
+			return
+
 		ai_response = gemini.generate_response(
 			prompt,
 			max_tokens=gemini_config["max_output_tokens"],
@@ -266,3 +288,106 @@ def _update_conversation(conversation_name, last_message, customer_name=None):
 		conversation.save(ignore_permissions=True)
 	except Exception as e:
 		frappe.log_error("Conversation update failed", str(e))
+
+
+def _check_handoff_trigger(customer_message, business=None):
+	"""Check if the customer message triggers a handoff to the business owner."""
+	if not customer_message:
+		return None
+
+	msg_lower = customer_message.lower()
+
+	# Universal handoff keywords (always trigger handoff)
+	universal_keywords = [
+		"refund",
+		"complaint",
+		"angry",
+		"help",
+		"manager",
+		"owner",
+		"human",
+		"payment",
+		"order number",
+		"tracking",
+		"delivery",
+		"urgent",
+		"emergency",
+	]
+
+	for keyword in universal_keywords:
+		if keyword in msg_lower:
+			return f"Customer mentioned: {keyword}"
+
+	# Business-specific handoff keywords
+	if business and business.handoff_keywords:
+		keywords = [k.strip().lower() for k in business.handoff_keywords.split("\n") if k.strip()]
+		for keyword in keywords:
+			if keyword in msg_lower:
+				return f"Business keyword match: {keyword}"
+
+	return None
+
+
+def _create_handoff(business_name, conversation_name, message_id, reason, customer_message):
+	"""Create a WhatsApp Handoff record and trigger owner alert."""
+	try:
+		handoff = frappe.get_doc(
+			{
+				"doctype": "WhatsApp Handoff",
+				"business": business_name,
+				"conversation": conversation_name,
+				"latest_message": message_id,
+				"reason": reason,
+				"status": "owner_notified",
+				"customer_summary": f"Customer: {customer_message[:200]}",
+				"owner_notified_at": datetime.now(),
+			}
+		)
+		handoff.insert(ignore_permissions=True)
+		frappe.logger().info(f"Handoff created: {handoff.name}")
+
+		# Alert the owner via WhatsApp
+		_alert_owner_whatsapp(business_name, conversation_name, message_id, reason)
+
+		return handoff.name
+	except Exception as e:
+		frappe.log_error("Handoff creation failed", str(e))
+		return None
+
+
+def _alert_owner_whatsapp(business_name, conversation_name, message_id, reason):
+	"""Send a WhatsApp alert to the business owner about the handoff."""
+	try:
+		business = frappe.get_doc("Business", business_name)
+		if not business.owner_phone_number:
+			frappe.log_error("Owner phone missing", f"Business {business_name} has no owner WhatsApp number")
+			return
+
+		conversation = frappe.get_doc("WhatsApp Conversation", conversation_name)
+		msg = frappe.get_doc("WhatsApp Message", message_id)
+		integration = frappe.get_doc("WhatsApp Integration", conversation.integration)
+
+		if not integration.enabled:
+			frappe.log_error("Integration disabled", f"Integration {conversation.integration} is disabled")
+			return
+
+		alert_text = f"""🔔 Handoff Needed
+
+Customer: {conversation.customer_name or conversation.customer_phone}
+Request: {msg.text_content[:100]}...
+
+Reason: {reason}
+
+Status: Awaiting your action"""
+
+		_send_whatsapp_message(
+			phone_number_id=integration.phone_number_id,
+			to_phone=business.owner_phone_number,
+			text=alert_text,
+			access_token=integration.access_token,
+		)
+		frappe.logger().info(f"Owner alert sent for handoff in {business_name}")
+
+	except Exception as e:
+		frappe.log_error("Owner WhatsApp alert failed", str(e))
+
