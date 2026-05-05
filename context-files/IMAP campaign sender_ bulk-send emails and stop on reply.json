@@ -1,0 +1,561 @@
+{
+  "name": "IMAP campaign sender: bulk-send emails and stop on reply",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "triggerAtMinute": 12
+            }
+          ]
+        }
+      },
+      "id": "c520ff06-6a3a-4e22-ac65-fa132d12b13b",
+      "name": "Every hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        1152,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "weekend-check",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              },
+              "leftValue": "={{ $now.isWeekend() }}",
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a8f7196e-3128-4194-b121-9256b51c1ac2",
+      "name": "Don't email on weekends",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": "https://docs.google.com/spreadsheets/d/1abS0X-6cuY4HCBfl1w77M3FOJisMAMyJYCjdwl8PVoM/edit?gid=0#gid=0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1abS0X-6cuY4HCBfl1w77M3FOJisMAMyJYCjdwl8PVoM/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "d0908059-0944-4dff-a906-89d77afb71e4",
+      "name": "Get emails",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [
+        1616,
+        32
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "QZkvtZIv3oInRivY",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function extractPlaceholders(text) {\n  const matches = new Set();\n  const regex = /\\{([a-zA-Z0-9_-]+)\\}/g;\n  let match;\n  while ((match = regex.exec(text)) !== null) {\n    matches.add(match[1]);\n  }\n  return [...matches];\n}\n\nfunction isReplied(value) {\n  if (value === true) return true;\n  if (value === false || value == null) return false;\n  return ['true', '1', 'yes', 'y'].includes(String(value).trim().toLowerCase());\n}\n\nfunction simpleHash(input) {\n  let hash = 2166136261;\n  const str = String(input);\n  for (let index = 0; index < str.length; index++) {\n    hash ^= str.charCodeAt(index);\n    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction tokenForEmail(mailId, email) {\n  return `${mailId}-${simpleHash(String(email).trim().toLowerCase())}`;\n}\n\nconst senderName = 'Brian | Tookio Solutions';\nconst subject = 'ERPNext for your Manufacturing Workflow';\nconst mailId = 'erpnext_mfg_01';\nconst logoUrl = 'https://erp.tookio.co.ke//files/tookio-high-resolution-logo.png';\nconst sequence = [\n  { send_on_day: 0, message: 'Hi {name},<br /><br />I hope you\\'re having a good week.<br /><br />I consult for a few manufacturing setups around Kenya, helping them migrate off messy spreadsheets and onto centralized systems.<br /><br />I\\'ve been following {company}, and I was curious if you are currently running your production planning and inventory on a unified system, or if you are still piecing things together across different software?<br /><br />At Tookio Solutions, we build out custom setups using ERPNext. We handle the heavy lifting of building the exact integrations and custom workflows needed for your specific company.<br /><br />I would love to hear back from you on this if you\\'re exploring better ways to streamline your operations.<br /><br />Best,<br /><br />Brian Wachira<br />Consultant, Tookio Solutions<br />' },\n  { send_on_day: 3, message: 'Hi {name},<br /><br />Just bumping this to the top of your inbox. I know things get busy at {company}.<br /><br />If you\\'re open to it, I\\'d still love to get your thoughts on how a unified ERPNext system could handle your custom workflows better than disjointed software.<br /><br />Let me know if you have a few minutes next week.<br /><br />Best,<br /><br />Brian Wachira<br />' },\n  { send_on_day: 8, message: 'Hi {name},<br /><br />I completely understand if streamlining your ERP isn\\'t a priority for {company} right now.<br /><br />I\\'ll stop reaching out, but if you ever find yourselves outgrowing your current inventory and production setups, feel free to drop me a note.<br /><br />Wishing you the best!<br /><br />Brian Wachira<br />Tookio Solutions<br />' }\n];\nconst placeholderNames = [...new Set(sequence.flatMap(step => extractPlaceholders(step.message)))];\nconst now = DateTime.now();\nconst results = [];\n\nfor (const item of $input.all()) {\n  const row = item.json;\n  const email = row.email;\n  if (!email) continue;\n  if (isReplied(row.replied)) continue;\n\n  let firstEmailed = row.first_emailed ? String(row.first_emailed) : '';\n  let seqIndex = Number.isFinite(Number(row.seq_number)) ? Number(row.seq_number) : -1;\n  let shouldSend = false;\n\n  if (!firstEmailed) {\n    seqIndex = 0;\n    firstEmailed = now.toFormat('yyyy-MM-dd');\n    shouldSend = true;\n  } else {\n    const nextIndex = seqIndex + 1;\n    if (nextIndex < sequence.length) {\n      const startedAt = DateTime.fromISO(firstEmailed);\n      if (startedAt.isValid) {\n        const daysSinceStart = now.diff(startedAt, 'days').days;\n        if (daysSinceStart >= sequence[nextIndex].send_on_day) {\n          seqIndex = nextIndex;\n          shouldSend = true;\n        }\n      }\n    }\n  }\n\n  if (!shouldSend) continue;\n\n  const placeholders = {};\n  for (const placeholderName of placeholderNames) {\n    if (!(placeholderName in row)) {\n      throw new Error(`Missing required sheet column: ${placeholderName}`);\n    }\n    placeholders[placeholderName] = row[placeholderName];\n  }\n\n  const campaignToken = tokenForEmail(mailId, email);\n  results.push({\n    json: {\n      ...row,\n      to_email: email,\n      subject: subject,\n      sender_name: senderName,\n      mail_id: mailId,\n      mail_seq: seqIndex,\n      message_template: sequence[seqIndex].message,\n      placeholders,\n      campaign_token: campaignToken,\n      logo_url: logoUrl,\n      first_emailed: firstEmailed,\n      last_emailed: now.toFormat('yyyy-MM-dd HH:mm:ss'),\n      seq_number: String(seqIndex)\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "4a9f97ff-fb63-49b6-9dd4-a908d03fbf88",
+      "name": "Prepare due sends",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1872,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function extractPlaceholders(text) {\n  const matches = new Set();\n  const regex = /\\{([a-zA-Z0-9_-]+)\\}/g;\n  let match;\n  while ((match = regex.exec(text)) !== null) {\n    matches.add(match[1]);\n  }\n  return [...matches];\n}\n\nconst placeholders = item.json.placeholders || {};\nlet html = item.json.message_template;\n\nfor (const placeholderName of extractPlaceholders(html)) {\n  const value = placeholderName in placeholders ? String(placeholders[placeholderName]) : '';\n  html = html.replace(new RegExp(`\\\\{${placeholderName}\\\\}`, 'g'), value);\n}\n\nconst logoHtml = item.json.logo_url ? `<br /><br /><img src=\"${item.json.logo_url}\" alt=\"Tookio Solutions\" style=\"max-width:180px;height:auto;\" />` : '';\nitem.json.message = ['<span data-cam=', item.json.campaign_token, ' data-seq=', item.json.mail_seq, ' data-ph=', encodeURIComponent(JSON.stringify(placeholders)), '></span>', html, logoHtml].join('');\nreturn item;"
+      },
+      "id": "718ab01f-e612-4b58-ab52-74be79fa2d7e",
+      "name": "Fill message placeholders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2128,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "sales@tookio.co.ke",
+        "toEmail": "={{ $json.to_email }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "html",
+        "html": "={{ $json.message }}",
+        "options": {
+          "appendAttribution": false,
+          "replyTo": "brian@tookio.co.ke"
+        }
+      },
+      "id": "3baa40fd-32b7-4807-b126-f591ee1169c1",
+      "name": "Send campaign email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        2384,
+        32
+      ],
+      "webhookId": "a5c76f57-f842-4d79-87a0-0ac6438d544f",
+      "credentials": {
+        "smtp": {
+          "id": "hTjw9w8Cwk1eCOHl",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "payload-email",
+              "name": "email",
+              "type": "string",
+              "value": "={{ $('Fill message placeholders').item.json.email }}"
+            },
+            {
+              "id": "payload-name",
+              "name": "name",
+              "type": "string",
+              "value": "={{ $('Fill message placeholders').item.json.name }}"
+            },
+            {
+              "id": "payload-company",
+              "name": "company",
+              "type": "string",
+              "value": "={{ $('Fill message placeholders').item.json.company }}"
+            },
+            {
+              "id": "payload-first",
+              "name": "first_emailed",
+              "type": "string",
+              "value": "={{ $('Fill message placeholders').item.json.first_emailed }}"
+            },
+            {
+              "id": "payload-last",
+              "name": "last_emailed",
+              "type": "string",
+              "value": "={{ $('Fill message placeholders').item.json.last_emailed }}"
+            },
+            {
+              "id": "payload-seq",
+              "name": "seq_number",
+              "type": "string",
+              "value": "={{ $('Fill message placeholders').item.json.seq_number }}"
+            },
+            {
+              "id": "payload-replied",
+              "name": "replied",
+              "type": "string",
+              "value": "={{ $('Fill message placeholders').item.json.replied || '' }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "40440a72-ad6c-44ea-a87a-760a99f9c06e",
+      "name": "Build sheet update payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        2592,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": "https://docs.google.com/spreadsheets/d/1abS0X-6cuY4HCBfl1w77M3FOJisMAMyJYCjdwl8PVoM/edit?gid=0#gid=0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1abS0X-6cuY4HCBfl1w77M3FOJisMAMyJYCjdwl8PVoM/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "email": "={{ $json.email }}",
+            "name": "={{ $json.name }}",
+            "company": "={{ $json.company }}",
+            "first_emailed": "={{ $json.first_emailed }}",
+            "last_emailed": "={{ $json.last_emailed }}",
+            "seq_number": "={{ $json.seq_number }}",
+            "replied": "={{ $json.replied }}"
+          },
+          "matchingColumns": [
+            "email"
+          ],
+          "schema": [
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company",
+              "displayName": "company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "first_emailed",
+              "displayName": "first_emailed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_emailed",
+              "displayName": "last_emailed",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "seq_number",
+              "displayName": "seq_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "replied",
+              "displayName": "replied",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "eae59b57-e8ac-45db-8493-02a51a53e434",
+      "name": "Update last contacted time",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [
+        2800,
+        32
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "QZkvtZIv3oInRivY",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "24b67c0f-bf5f-4a07-8323-7a1a42b037f5",
+      "name": "Email Trigger (IMAP)",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.1,
+      "position": [
+        1152,
+        496
+      ],
+      "credentials": {
+        "imap": {
+          "id": "2wE19TqrgN1MrYNi",
+          "name": "IMAP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function asText(value) {\n  if (value == null) return '';\n  if (typeof value === 'string') return value;\n  if (Array.isArray(value)) return value.map(asText).join(' ');\n  if (typeof value === 'object') {\n    return value.text || value.value || value.address || value.name || JSON.stringify(value);\n  }\n  return String(value);\n}\n\nfunction extractEmail(value) {\n  const match = asText(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);\n  return match ? match[0].toLowerCase() : '';\n}\n\nfunction tokenFromSubject(subject) {\n  const match = String(subject || '').match(/\\[([a-zA-Z0-9_-]+)\\]/);\n  return match ? match[1] : '';\n}\n\nfunction tokenFromBody(text) {\n  const match = String(text || '').match(/data-cam=['\"]([^'\"]+)['\"]/i);\n  return match ? match[1] : '';\n}\n\nfor (const item of $input.all()) {\n  const message = item.json;\n  const subject = asText(message.subject || message.headers?.subject || message.envelope?.subject || '');\n  const fromEmail = extractEmail(message.from || message.From || message.sender || message.replyTo || message.headers?.from || message.envelope?.from || '');\n  const html = asText(message.html || message.body?.html || message.message?.html || message.payload?.body?.data || '');\n  const text = asText(message.text || message.body?.text || message.message?.text || message.snippet || '');\n  const token = tokenFromSubject(subject) || tokenFromBody(html) || tokenFromBody(text);\n\n  item.json = {\n    ...message,\n    parsed_subject: subject,\n    from_email: fromEmail,\n    reply_html: html,\n    reply_text: text,\n    campaign_token: token\n  };\n}\n\nreturn $input.all();"
+      },
+      "id": "c569b876-085d-4109-a7f0-0d4779498bb0",
+      "name": "Parse IMAP reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": "https://docs.google.com/spreadsheets/d/1abS0X-6cuY4HCBfl1w77M3FOJisMAMyJYCjdwl8PVoM/edit?gid=0#gid=0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        }
+      },
+      "id": "dd84274a-a360-4243-9c50-f6b12948ca71",
+      "name": "Get sheet rows for replies",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [
+        1648,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "function simpleHash(input) {\n  let hash = 2166136261;\n  const str = String(input);\n  for (let i = 0; i < str.length; i++) {\n    hash ^= str.charCodeAt(i);\n    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction tokenForEmail(mailId, email) {\n  return `${mailId}-${simpleHash(String(email).trim().toLowerCase())}`;\n}\n\nconst mailId = 'erpnext_mfg_01';\nconst reply = $('Parse IMAP reply').first().json;\nconst replyEmail = String(reply.from_email || '').trim().toLowerCase();\nconst replyToken = String(reply.campaign_token || '').trim();\n\nfor (const item of $input.all()) {\n  const row = item.json;\n  const email = String(row.email || '').trim().toLowerCase();\n  if (!email) continue;\n\n  const expectedToken = tokenForEmail(mailId, email);\n  const tokenMatches = replyToken && replyToken === expectedToken;\n  const emailMatches = replyEmail && replyEmail === email;\n\n  if (tokenMatches || emailMatches) {\n    item.json = {\n      ...row,\n      replied: true,\n      reply_subject: reply.parsed_subject || '',\n      reply_from_email: replyEmail || '',\n      reply_token: replyToken || '',\n      reply_body: reply.reply_text || reply.reply_html || ''\n    };\n    return item;\n  }\n}\n\nthrow new Error(`No matching row found for reply from ${replyEmail || 'unknown sender'}`);"
+      },
+      "id": "fc7968c5-b611-494c-833c-c17811f933c1",
+      "name": "Match reply to row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1904,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": "https://docs.google.com/spreadsheets/d/1abS0X-6cuY4HCBfl1w77M3FOJisMAMyJYCjdwl8PVoM/edit?gid=0#gid=0"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        }
+      },
+      "id": "5d01adaf-152c-48eb-b529-05a9bf3d14b4",
+      "name": "Mark replied in sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.2,
+      "position": [
+        2144,
+        496
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every hour": {
+      "main": [
+        [
+          {
+            "node": "Don't email on weekends",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Don't email on weekends": {
+      "main": [
+        [
+          {
+            "node": "Get emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get emails": {
+      "main": [
+        [
+          {
+            "node": "Prepare due sends",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare due sends": {
+      "main": [
+        [
+          {
+            "node": "Fill message placeholders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fill message placeholders": {
+      "main": [
+        [
+          {
+            "node": "Send campaign email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send campaign email": {
+      "main": [
+        [
+          {
+            "node": "Build sheet update payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build sheet update payload": {
+      "main": [
+        [
+          {
+            "node": "Update last contacted time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Trigger (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "Parse IMAP reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse IMAP reply": {
+      "main": [
+        [
+          {
+            "node": "Get sheet rows for replies",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get sheet rows for replies": {
+      "main": [
+        [
+          {
+            "node": "Match reply to row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match reply to row": {
+      "main": [
+        [
+          {
+            "node": "Mark replied in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "af6fa97a-0325-42f3-b414-b60146cd160c",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2cfa89a583aecbb2956eaba643d17ed949476b89fdfbd8a459aee65b8eb2e058"
+  },
+  "id": "OGYOTprdjwJKsvIM",
+  "tags": []
+}

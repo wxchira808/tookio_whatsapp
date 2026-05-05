@@ -1,0 +1,657 @@
+{
+  "name": "WhatsApp AI Assistant via ERPNext",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "erpnext-whatsapp-message",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook_trigger",
+      "name": "ERPNext Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "erpnext_whatsapp_message"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const input = $input.first()?.json || {};\nconst body = input.body ?? input;\nconst candidate = body.data ?? body.message ?? body;\n\nconst messageId = candidate.message_id || candidate.name || candidate.docname || body.message_id || input.message_id || '';\nconst integration = candidate.integration || candidate.whatsapp_integration || body.integration || input.integration || '';\nconst customerPhone = candidate.from_phone || candidate.customer_phone || body.from_phone || body.customer_phone || '';\nconst customerName = candidate.customer_name || body.customer_name || '';\nconst customerMessage = candidate.text_content || candidate.message_text || candidate.customer_message || body.text_content || body.message_text || '';\nconst messageType = candidate.message_type || body.message_type || 'text';\nconst imageId = candidate.image_id || body.image_id || '';\n\nif (!messageId) {\n  throw new Error('ERPNext webhook payload must include message_id');\n}\n\nreturn {\n  json: {\n    message_id: messageId,\n    integration,\n    customer_phone: customerPhone,\n    customer_name: customerName,\n    customer_message: customerMessage,\n    message_type: messageType,\n    image_id: imageId,\n    received_at: new Date().toISOString()\n  }\n};"
+      },
+      "id": "normalize_payload",
+      "name": "Normalize ERPNext Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.FRAPPE_SITE_URL + '/api/resource/WhatsApp Message/' + $json.message_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.FRAPPE_AUTH_HEADER }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fetch_message",
+      "name": "Fetch WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const incoming = $('Normalize ERPNext Payload').first().json;\nconst response = $input.first()?.json || {};\n\nif (response.error) {\n  return {\n    json: {\n      ...incoming,\n      workflow_error: `Failed to fetch WhatsApp Message: ${response.error.message || 'unknown error'}`\n    }\n  };\n}\n\nconst message = response.data || response.message || response;\n\nreturn {\n  json: {\n    ...incoming,\n    message_id: message.name || incoming.message_id,\n    integration: message.integration || incoming.integration,\n    customer_phone: message.from_phone || incoming.customer_phone,\n    customer_name: message.customer_name || incoming.customer_name,\n    customer_message: message.text_content || incoming.customer_message,\n    message_type: message.message_type || incoming.message_type || 'text',\n    image_id: message.image_id || incoming.image_id,\n    message_doc: message\n  }\n};"
+      },
+      "id": "merge_message_context",
+      "name": "Merge Message Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.FRAPPE_SITE_URL + '/api/resource/WhatsApp Integration/' + $json.integration }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.FRAPPE_AUTH_HEADER }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fetch_integration",
+      "name": "Fetch WhatsApp Integration",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        300
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const incoming = $('Merge Message Context').first().json;\nconst response = $input.first()?.json || {};\n\nif (response.error) {\n  return {\n    json: {\n      ...incoming,\n      workflow_error: `Failed to fetch WhatsApp Integration: ${response.error.message || 'unknown error'}`\n    }\n  };\n}\n\nconst integration = response.data || response.message || response;\nconst sheetRange = integration.google_sheet_range || 'Products!A1:J500';\n\nreturn {\n  json: {\n    ...incoming,\n    business_name: integration.business_name || '',\n    phone_number_id: integration.phone_number_id || '',\n    access_token: integration.access_token || '',\n    gemini_api_key: integration.gemini_api_key || '',\n    google_sheet_id: integration.google_sheet_id || '',\n    google_sheet_range: sheetRange,\n    google_sheet_range_encoded: encodeURIComponent(sheetRange),\n    google_api_key: $env.GOOGLE_API_KEY || '',\n    integration_doc: integration\n  }\n};"
+      },
+      "id": "merge_integration_context",
+      "name": "Merge Integration Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.phone_number_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "leftValue": "={{ $json.access_token }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "config_ready",
+      "name": "Has Required Config?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.workflow_error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "workflow_ok",
+      "name": "Workflow OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.google_sheet_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "sheet_ready",
+      "name": "Has Product Sheet?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + $json.google_sheet_id + '/values/' + $json.google_sheet_range_encoded + '?key=' + $json.google_api_key }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "fetch_sheet",
+      "name": "Fetch Product Sheet",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        180
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const context = $('Merge Integration Context').first().json;\nconst sheetResponse = $input.first()?.json || {};\n\nconst values = sheetResponse.values || sheetResponse.data?.values || [];\nconst headers = Array.isArray(values) && values.length > 0 ? values[0] : [];\nconst rows = Array.isArray(values) && values.length > 1 ? values.slice(1, 6) : [];\n\nconst products = rows.map((row) => {\n  const record = {};\n  headers.forEach((header, index) => {\n    record[header] = row[index] ?? '';\n  });\n  return record;\n});\n\nconst summary = products.length\n  ? products.map((product, index) => {\n      const name = product['Product Name'] || product['Name'] || product.product_name || 'Unknown product';\n      const price = product['Price'] || product.price || '';\n      const currency = product['Currency'] || product.currency || '';\n      const stock = product['Stock'] || product.stock || '';\n      const sku = product['SKU'] || product.sku || '';\n      return `${index + 1}. ${name}${sku ? ` (SKU: ${sku})` : ''}${price ? ` - ${price}${currency ? ' ' + currency : ''}` : ''}${stock !== '' ? ` | Stock: ${stock}` : ''}`;\n    }).join('\\n')\n  : 'No product catalog rows were returned.';\n\nconst prompt = `You are the WhatsApp assistant for ${context.business_name || 'this business'}.\\nReply in a friendly, concise way and keep it under 150 words.\\n\\nCustomer name: ${context.customer_name || 'Unknown'}\\nCustomer phone: ${context.customer_phone || 'Unknown'}\\nMessage type: ${context.message_type || 'text'}\\nCustomer message: ${context.customer_message || ''}\\n${context.image_id ? `Image ID: ${context.image_id}\\n` : ''}\\nProduct catalog:\n${summary}\\n\\nRules:\n- Recommend only products from the catalog when relevant.\\n- If the message is an image without a caption, ask the customer what they want help with.\\n- If the catalog is empty, do not invent products.`;\n\nreturn {\n  json: {\n    ...context,\n    products_summary: summary,\n    prompt\n  }\n};"
+      },
+      "id": "build_prompt",
+      "name": "Build Gemini Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const context = $('Merge Integration Context').first().json;\nconst sheetResponse = $input.first()?.json || {};\n\nconst values = sheetResponse.values || sheetResponse.data?.values || [];\nconst headers = Array.isArray(values) && values.length > 0 ? values[0] : [];\nconst rows = Array.isArray(values) && values.length > 1 ? values.slice(1, 6) : [];\n\nconst products = rows.map((row) => {\n  const record = {};\n  headers.forEach((header, index) => {\n    record[header] = row[index] ?? '';\n  });\n  return record;\n});\n\nconst summary = products.length\n  ? products.map((product, index) => {\n      const name = product['Product Name'] || product['Name'] || product.product_name || 'Unknown product';\n      const price = product['Price'] || product.price || '';\n      const currency = product['Currency'] || product.currency || '';\n      const stock = product['Stock'] || product.stock || '';\n      const sku = product['SKU'] || product.sku || '';\n      return `${index + 1}. ${name}${sku ? ` (SKU: ${sku})` : ''}${price ? ` - ${price}${currency ? ' ' + currency : ''}` : ''}${stock !== '' ? ` | Stock: ${stock}` : ''}`;\n    }).join('\\n')\n  : 'No product catalog rows were returned.';\n\nconst prompt = `You are the WhatsApp assistant for ${context.business_name || 'this business'}.\\nReply in a friendly, concise way and keep it under 150 words.\\n\\nCustomer name: ${context.customer_name || 'Unknown'}\\nCustomer phone: ${context.customer_phone || 'Unknown'}\\nMessage type: ${context.message_type || 'text'}\\nCustomer message: ${context.customer_message || ''}\\n${context.image_id ? `Image ID: ${context.image_id}\\n` : ''}\\nProduct catalog:\n${summary}\\n\\nRules:\n- Recommend only products from the catalog when relevant.\\n- If the message is an image without a caption, ask the customer what they want help with.\\n- If the catalog is empty, do not invent products.`;\n\nreturn {\n  json: {\n    ...context,\n    products_summary: summary,\n    prompt\n  }\n};"
+      },
+      "id": "build_prompt_no_sheet",
+      "name": "Build Gemini Prompt Without Sheet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=' + ($json.gemini_api_key || $env.GEMINI_API_KEY) }}",
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ JSON.stringify({ contents: [{ parts: [{ text: $json.prompt }] }], generationConfig: { maxOutputTokens: 180, temperature: 0.7, topP: 0.95 } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "call_gemini",
+      "name": "Call Gemini 2.0 Flash",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2460,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const context = $('Build Gemini Prompt').first().json;\nconst response = $input.first()?.json || {};\n\nlet aiResponse = 'Sorry, I could not generate a response right now. Please try again in a moment.';\n\nif (!response.error) {\n  const candidateText = response.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join(' ').trim();\n  if (candidateText) {\n    aiResponse = candidateText;\n  }\n}\n\nreturn {\n  json: {\n    ...context,\n    ai_response: aiResponse,\n    gemini_failed: Boolean(response.error),\n    gemini_raw: response\n  }\n};"
+      },
+      "id": "extract_reply",
+      "name": "Extract AI Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2680,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://graph.facebook.com/v18.0/' + $json.phone_number_id + '/messages' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + $json.access_token }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ JSON.stringify({ messaging_product: 'whatsapp', to: $json.customer_phone, type: 'text', text: { preview_url: false, body: $json.ai_response } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "send_whatsapp",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2900,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const context = $('Extract AI Reply').first().json;\nconst sendResult = $input.first()?.json || {};\nconst sentOk = !sendResult.error && (Array.isArray(sendResult.messages) ? sendResult.messages.length > 0 : Boolean(sendResult.messages || sendResult.id));\n\nreturn {\n  json: {\n    ...context,\n    whatsapp_sent_ok: sentOk,\n    whatsapp_send_error: sendResult.error?.message || '',\n    response_sent_at: new Date().toISOString()\n  }\n};"
+      },
+      "id": "build_update_payload",
+      "name": "Build Frappe Update Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3120,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.FRAPPE_SITE_URL + '/api/resource/WhatsApp Message/' + $json.message_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.FRAPPE_AUTH_HEADER }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "application/json",
+        "body": "={{ JSON.stringify({ processed: $json.whatsapp_sent_ok ? 1 : 0, response_text: $json.ai_response, response_sent_at: $json.response_sent_at, send_error: $json.whatsapp_send_error || '' }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "update_message",
+      "name": "Update Frappe Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3340,
+        260
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const context = $('Merge Integration Context').first().json;\nreturn {\n  json: {\n    ok: false,\n    error: context.workflow_error || 'Missing required WhatsApp integration config',\n    message_id: context.message_id || '',\n    integration: context.integration || ''\n  }\n};"
+      },
+      "id": "error_response",
+      "name": "Build Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "respond_webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3560,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "ERPNext Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize ERPNext Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize ERPNext Payload": {
+      "main": [
+        [
+          {
+            "node": "Fetch WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Merge Message Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Message Context": {
+      "main": [
+        [
+          {
+            "node": "Fetch WhatsApp Integration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch WhatsApp Integration": {
+      "main": [
+        [
+          {
+            "node": "Merge Integration Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Integration Context": {
+      "main": [
+        [
+          {
+            "node": "Workflow OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow OK?": {
+      "main": [
+        [
+          {
+            "node": "Has Required Config?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Required Config?": {
+      "main": [
+        [
+          {
+            "node": "Has Product Sheet?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Product Sheet?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Product Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Gemini Prompt Without Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Product Sheet": {
+      "main": [
+        [
+          {
+            "node": "Build Gemini Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gemini Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini 2.0 Flash",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gemini Prompt Without Sheet": {
+      "main": [
+        [
+          {
+            "node": "Call Gemini 2.0 Flash",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Gemini 2.0 Flash": {
+      "main": [
+        [
+          {
+            "node": "Extract AI Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract AI Reply": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Message": {
+      "main": [
+        [
+          {
+            "node": "Build Frappe Update Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Frappe Update Payload": {
+      "main": [
+        [
+          {
+            "node": "Update Frappe Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Frappe Message": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "id": "whatsapp_ai_erpnext_workflow",
+  "tags": [
+    "whatsapp",
+    "erpnext",
+    "gemini",
+    "google-sheets"
+  ]
+}
