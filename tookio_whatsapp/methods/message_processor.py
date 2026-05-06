@@ -72,12 +72,22 @@ def process_whatsapp_message(message_id):
 				return
 
 			# After the initial ask, treat incoming text as business selection and match fuzzily.
-			possible_business = _find_business_by_name(message.text_content)
+			# Also understand replies like "first one" or "2" from previous suggestions.
+			possible_business = _resolve_business_selection_from_previous_prompt(
+				conversation_name=conversation.name,
+				user_text=message.text_content,
+			)
 			if not possible_business:
-				response_text = (
-					"I couldn't find that business name yet. Please type the business name again "
-					"(for example: Tio's Galore or Busy Works Beats)."
-				)
+				possible_business = _find_business_by_name(message.text_content)
+			if not possible_business:
+				candidates = _get_business_candidates(message.text_content, limit=3)
+				if candidates:
+					response_text = _build_candidates_message(candidates)
+				else:
+					response_text = (
+						"I couldn't find that business name yet. Please type the business name again "
+						"(for example: Tio's Galore or Busy Works Beats)."
+					)
 				_send_whatsapp_message(
 					phone_number_id=integration.phone_number_id,
 					to_phone=message.from_phone,
@@ -453,6 +463,132 @@ def _find_business_by_name(text):
 	
 	except Exception as e:
 		frappe.log_error("Error finding business by name", str(e))
+		return None
+
+
+def _get_business_candidates(text, limit=3):
+	"""Return top matching enabled business names for suggestion UX."""
+	if not text or len(text.strip()) < 2:
+		return []
+
+	try:
+		businesses = frappe.get_all(
+			"Business",
+			filters={"enabled": 1},
+			fields=["name", "business_name"],
+			limit_page_length=200,
+		)
+		if not businesses:
+			return []
+
+		def normalize(value):
+			v = (value or "").lower()
+			v = re.sub(r"[^a-z0-9]+", " ", v)
+			return " ".join(v.split())
+
+		query = normalize(text)
+		if not query:
+			return []
+
+		scored = []
+		for b in businesses:
+			label = b.get("business_name") or b.get("name")
+			bn = normalize(label)
+			ratio = difflib.SequenceMatcher(None, query, bn).ratio()
+			if query in bn or bn in query:
+				ratio = max(ratio, 0.9)
+			scored.append((ratio, b.get("name"), label))
+
+		scored.sort(key=lambda x: x[0], reverse=True)
+		top = [item for item in scored if item[0] >= 0.45][:limit]
+		return [{"name": n, "label": lbl} for _, n, lbl in top]
+	except Exception as e:
+		frappe.log_error("Error generating business candidates", str(e))
+		return []
+
+
+def _build_candidates_message(candidates):
+	"""Build numbered top-3 suggestion text to allow easy user selection."""
+	lines = [
+		"I found a few close matches. Reply with the number or business name:",
+	]
+	for idx, c in enumerate(candidates, start=1):
+		lines.append(f"{idx}. {c.get('label')}")
+	return "\n".join(lines)
+
+
+def _resolve_business_selection_from_previous_prompt(conversation_name, user_text):
+	"""Resolve replies like 'first one' or '2' based on the previous numbered suggestions."""
+	if not conversation_name or not user_text:
+		return None
+
+	previous = _get_last_assistant_response(conversation_name)
+	if not previous:
+		return None
+
+	# Parse previous suggestion list lines: "1. Business Name"
+	options = []
+	for line in (previous or "").splitlines():
+		m = re.match(r"^\s*([1-3])\.\s+(.+?)\s*$", line)
+		if m:
+			options.append(m.group(2).strip())
+
+	if not options:
+		return None
+
+	text = (user_text or "").strip().lower()
+	index = None
+
+	# Numeric selection
+	if text in {"1", "2", "3"}:
+		index = int(text) - 1
+
+	# Word/ordinal selection
+	if index is None:
+		if any(token in text for token in ["first", "1st", "one", "option 1"]):
+			index = 0
+		elif any(token in text for token in ["second", "2nd", "two", "option 2"]):
+			index = 1
+		elif any(token in text for token in ["third", "3rd", "three", "option 3"]):
+			index = 2
+
+	if index is not None and 0 <= index < len(options):
+		return _find_business_by_name(options[index])
+
+	# If user typed one of the suggested names approximately, resolve that too.
+	def normalize(value):
+		v = (value or "").lower()
+		v = re.sub(r"[^a-z0-9]+", " ", v)
+		return " ".join(v.split())
+
+	user_norm = normalize(text)
+	for opt in options:
+		opt_norm = normalize(opt)
+		if user_norm == opt_norm or user_norm in opt_norm or opt_norm in user_norm:
+			return _find_business_by_name(opt)
+
+	return None
+
+
+def _get_last_assistant_response(conversation_name):
+	"""Fetch the latest assistant response_text for this conversation."""
+	try:
+		rows = frappe.db.sql(
+			"""
+			select response_text
+			from `tabWhatsApp Message`
+			where conversation = %s
+			  and ifnull(response_text, '') != ''
+			order by creation desc
+			limit 1
+			""",
+			(conversation_name,),
+			as_dict=True,
+		)
+		if rows:
+			return rows[0].get("response_text")
+		return None
+	except Exception:
 		return None
 
 
