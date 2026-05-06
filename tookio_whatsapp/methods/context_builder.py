@@ -5,6 +5,31 @@ import json
 import requests
 import frappe
 from datetime import datetime, timedelta
+from urllib.parse import quote
+
+
+def _extract_sheet_id(sheet_url_or_id):
+	"""
+	Extract just the sheet ID from a full Google Sheets URL or return the ID if already extracted.
+	Examples:
+	  Input: https://docs.google.com/spreadsheets/d/1ABC123/edit?usp=sharing
+	  Output: 1ABC123
+	  Input: 1ABC123
+	  Output: 1ABC123
+	"""
+	if not sheet_url_or_id:
+		return ""
+	if "/d/" in sheet_url_or_id:
+		# Extract from URL
+		try:
+			parts = sheet_url_or_id.split("/d/")
+			if len(parts) > 1:
+				sheet_id = parts[1].split("/")[0]  # Get ID before the next /
+				return sheet_id.strip()
+		except Exception:
+			pass
+	# Return as-is if it looks like just an ID
+	return sheet_url_or_id.strip()
 
 
 def needs_business_selection(conversation):
@@ -129,19 +154,23 @@ def get_product_catalogue(sheet_id, sheet_range, oauth_token=None, integration_n
 	Fetch product catalogue from Google Sheets.
 	
 	Args:
-		sheet_id (str): Google Sheet ID
+		sheet_id (str): Google Sheet ID or full URL
 		sheet_range (str): Range like "Products!A1:E100"
 		oauth_token (str): Optional OAuth token for private sheets
 		
 	Returns:
 		str: Formatted product list for AI prompt, or empty string if fetch fails
 	"""
+	# Extract just the sheet ID in case user pasted a full URL
+	sheet_id = _extract_sheet_id(sheet_id)
 	if not sheet_id or not sheet_range:
 		return ""
 	
 	try:
 		# Use Google Sheets public API (no auth needed if sheet is public)
-		url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{sheet_range}"
+		# URL-encode the range to handle special characters like !
+		encoded_range = quote(sheet_range, safe='')
+		url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{encoded_range}"
 		
 		# Note: This requires the sheet to be public or we need a proper API key.
 		# For now, use a simple public read (no authentication).
@@ -197,7 +226,19 @@ def get_product_catalogue(sheet_id, sheet_range, oauth_token=None, integration_n
 		return "\n".join(lines)
 	
 	except Exception as e:
-		frappe.log_error("Failed to fetch product catalogue from Google Sheets", str(e))
+		error_msg = str(e)
+		# Provide helpful error message for common issues
+		if "INVALID_ARGUMENT" in error_msg or "Unable to parse range" in error_msg:
+			frappe.logger().warning(
+				f"Google Sheets range error (likely wrong sheet name): {sheet_range}. "
+				f"Check that your Google Sheet has a tab/sheet named '{sheet_range.split('!')[0]}'"
+			)
+		elif "404" in error_msg or "Not Found" in error_msg:
+			frappe.logger().warning(f"Google Sheet not found: {sheet_id}. Check the sheet ID.")
+		elif "401" in error_msg or "Unauthorized" in error_msg:
+			frappe.logger().warning(f"Google Sheets API unauthorized. Check your API key.")
+		else:
+			frappe.log_error("Failed to fetch product catalogue from Google Sheets", error_msg)
 		return ""
 
 

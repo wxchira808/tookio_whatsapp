@@ -6,6 +6,23 @@ import requests
 from urllib.parse import quote
 
 
+def _extract_sheet_id(sheet_url_or_id):
+	"""
+	Extract just the sheet ID from a full Google Sheets URL or return the ID if already extracted.
+	"""
+	if not sheet_url_or_id:
+		return ""
+	if "/d/" in sheet_url_or_id:
+		try:
+			parts = sheet_url_or_id.split("/d/")
+			if len(parts) > 1:
+				sheet_id = parts[1].split("/")[0]
+				return sheet_id.strip()
+		except Exception:
+			pass
+	return sheet_url_or_id.strip()
+
+
 class GoogleSheetsClient:
 	"""Handles fetching data from Google Sheets using Sheets API v4"""
 	
@@ -14,10 +31,11 @@ class GoogleSheetsClient:
 		Initialize Google Sheets client
 		
 		Args:
-			sheet_id (str): Google Sheet ID from URL
+			sheet_id (str): Google Sheet ID or full URL
 			api_key (str): Optional Google API key (uses frappe.conf if not provided)
 		"""
-		self.sheet_id = sheet_id
+		# Extract just the ID in case user pasted a full URL
+		self.sheet_id = _extract_sheet_id(sheet_id)
 		self.api_key = api_key or self._get_api_key()
 		self.base_url = "https://sheets.googleapis.com/v4/spreadsheets"
 	
@@ -27,7 +45,8 @@ class GoogleSheetsClient:
 	
 	def fetch_products(self, sheet_range="Products!A1:J500"):
 		"""
-		Fetch product data from Google Sheet
+		Fetch product data from Google Sheet.
+		Automatically extracts sheet ID if user provided a full URL.
 		
 		Args:
 			sheet_range (str): Range to fetch (e.g., 'Sheet1!A1:J100')
@@ -37,9 +56,10 @@ class GoogleSheetsClient:
 		"""
 		try:
 			if not self.api_key:
-			frappe.logger().info("Skipping Google Sheets fetch because no API key is configured")
+				frappe.logger().info("Skipping Google Sheets fetch because no API key is configured")
+				return []
 			
-			url = f"{self.base_url}/{self.sheet_id}/values/{quote(sheet_range)}"
+				url = f"{self.base_url}/{self.sheet_id}/values/{quote(sheet_range, safe='')}"
 			params = {"key": self.api_key}
 			
 			response = requests.get(url, params=params, timeout=10)
@@ -72,7 +92,14 @@ class GoogleSheetsClient:
 			return products
 		
 		except requests.exceptions.RequestException as e:
-			frappe.log_error("Google Sheets API Error", str(e))
+			error_msg = str(e)
+			if "INVALID_ARGUMENT" in error_msg or "Unable to parse range" in error_msg:
+				frappe.logger().warning(
+					f"Google Sheets range error (likely wrong sheet name): {sheet_range}. "
+					f"Check that your Google Sheet has a tab/sheet named '{sheet_range.split('!')[0]}'"
+				)
+			else:
+				frappe.log_error("Google Sheets API Error", error_msg)
 			return []
 		except Exception as e:
 			frappe.log_error("Google Sheets parsing error", str(e))
