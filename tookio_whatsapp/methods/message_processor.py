@@ -23,9 +23,26 @@ def process_whatsapp_message(message_id):
 			frappe.log_error("Integration disabled", f"Integration {message.integration} is disabled")
 			return
 
-		if message.message_type != "text":
-			frappe.log_error("Unsupported message type", f"Message {message_id}: {message.message_type}")
+		supported_types = {"text", "image", "document"}
+		if message.message_type not in supported_types:
+			response_text = "I can currently process text, images, and documents. Please send one of these formats."
+			_send_whatsapp_message(
+				phone_number_id=integration.phone_number_id,
+				to_phone=message.from_phone,
+				text=response_text,
+				access_token=integration.access_token,
+			)
+			message.processed = True
+			message.response_text = response_text
+			message.response_sent_at = datetime.now()
+			message.save(ignore_permissions=True)
+			frappe.logger().warning(f"Unsupported message type for {message_id}: {message.message_type}")
 			return
+
+		incoming_text = _build_customer_message_text(message)
+		if not (message.text_content or "").strip() and incoming_text:
+			message.text_content = incoming_text
+			message.save(ignore_permissions=True)
 
 		conversation = _get_or_create_conversation(
 			integration=message.integration,
@@ -69,7 +86,7 @@ def process_whatsapp_message(message_id):
 		# If no business selected yet:
 		if not conversation.business:
 			# First ever message in this conversation: ask for business name once.
-			if (conversation.message_count or 0) == 0 or _looks_like_greeting(message.text_content):
+			if (conversation.message_count or 0) == 0 or _looks_like_greeting(incoming_text):
 				response_text = (
 					f"Hi {message.customer_name}, thank you for reaching out to us, "
 					"kindly assist us with the business name and whatever product you are trying to buy."
@@ -86,7 +103,7 @@ def process_whatsapp_message(message_id):
 				message.save(ignore_permissions=True)
 				_update_conversation(
 					conversation_name=conversation.name,
-					last_message=message.text_content,
+					last_message=incoming_text,
 					customer_name=message.customer_name,
 				)
 				return
@@ -95,10 +112,10 @@ def process_whatsapp_message(message_id):
 			# Also understand replies like "first one" or "2" from previous suggestions.
 			possible_business = _resolve_business_selection_from_previous_prompt(
 				conversation_name=conversation.name,
-				user_text=message.text_content,
+				user_text=incoming_text,
 			)
 			if not possible_business:
-				possible_business = _find_business_by_name(message.text_content)
+				possible_business = _find_business_by_name(incoming_text)
 			if not possible_business:
 				if not _has_any_business_records():
 					response_text = (
@@ -106,7 +123,7 @@ def process_whatsapp_message(message_id):
 						"Please ask the admin to create at least one Business record first."
 					)
 				else:
-					candidates = _get_business_candidates(message.text_content, limit=3)
+					candidates = _get_business_candidates(incoming_text, limit=3)
 					if candidates:
 						response_text = _build_candidates_message(candidates)
 					else:
@@ -126,7 +143,7 @@ def process_whatsapp_message(message_id):
 				message.save(ignore_permissions=True)
 				_update_conversation(
 					conversation_name=conversation.name,
-					last_message=message.text_content,
+					last_message=incoming_text,
 					customer_name=message.customer_name,
 				)
 				return
@@ -159,7 +176,7 @@ def process_whatsapp_message(message_id):
 			message.save(ignore_permissions=True)
 			_update_conversation(
 				conversation_name=conversation.name,
-				last_message=message.text_content,
+				last_message=incoming_text,
 				customer_name=message.customer_name,
 			)
 			return
@@ -202,14 +219,14 @@ def process_whatsapp_message(message_id):
 		# Build the full prompt combining system prompt and user message
 		prompt = _build_prompt(
 			system_prompt=system_prompt,
-			customer_message=message.text_content,
+			customer_message=incoming_text,
 			customer_name=message.customer_name,
 			conversation_history=recent_messages,
 		)
 
 		# Check if handoff is needed before calling Gemini
 		business = frappe.get_doc("Business", business_name) if business_name else None
-		handoff_reason = _check_handoff_trigger(message.text_content, business)
+		handoff_reason = _check_handoff_trigger(incoming_text, business)
 
 		if handoff_reason:
 			# Trigger handoff instead of AI response
@@ -218,7 +235,7 @@ def process_whatsapp_message(message_id):
 				conversation_name=conversation.name,
 				message_id=message_id,
 				reason=handoff_reason,
-				customer_message=message.text_content,
+				customer_message=incoming_text,
 			)
 			# Notify customer that we're getting help
 			_send_whatsapp_message(
@@ -253,7 +270,7 @@ def process_whatsapp_message(message_id):
 
 			_update_conversation(
 				conversation_name=conversation.name,
-				last_message=message.text_content,
+				last_message=incoming_text,
 				customer_name=message.customer_name,
 			)
 
@@ -392,6 +409,21 @@ def _build_prompt(system_prompt, customer_message, customer_name, conversation_h
 	prompt += "\n\nRespond in your established tone. Keep it concise and relevant to their question."
 	
 	return prompt
+
+
+def _build_customer_message_text(message):
+	"""Normalize incoming text so media messages can still be processed in the AI flow."""
+	message_type = (message.get("message_type") or "").lower()
+	raw_text = (message.get("text_content") or "").strip()
+	if raw_text:
+		return raw_text
+
+	if message_type == "image":
+		return "Customer shared an image attachment (likely a screenshot/payment proof)."
+	if message_type == "document":
+		return "Customer shared a document attachment."
+
+	return ""
 
 
 def _send_whatsapp_message(phone_number_id, to_phone, text, access_token):
