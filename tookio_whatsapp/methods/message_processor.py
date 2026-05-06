@@ -38,12 +38,29 @@ def process_whatsapp_message(message_id):
 			message.save(ignore_permissions=True)
 
 		# Reset business selection after ~7 hours so one customer can talk to multiple businesses in a day.
-		if conversation.business and conversation.business_assigned_at:
-			assigned_at = conversation.business_assigned_at
+		# Use defensive access because the DB schema may not yet include the new field on some installs.
+		assigned_at = None
+		try:
+			# Prefer Document-style .get (works for both dict-like and Document objects)
+			assigned_at = conversation.get("business_assigned_at")
+		except Exception:
+			assigned_at = getattr(conversation, "business_assigned_at", None)
+		if assigned_at:
+			try:
+				if isinstance(assigned_at, str):
+					assigned_at = datetime.fromisoformat(assigned_at)
+			except Exception:
+				# If parsing fails, skip reset logic to avoid throwing
+				assigned_at = None
+		if assigned_at:
 			elapsed = (datetime.now() - assigned_at).total_seconds() / 3600
 			if elapsed > 7:
 				conversation.business = None
-				conversation.business_assigned_at = None
+				# defensive save: only set attribute if writable
+				try:
+					conversation.business_assigned_at = None
+				except Exception:
+					pass
 				conversation.save(ignore_permissions=True)
 
 		# If no business selected yet:
@@ -556,7 +573,7 @@ def _looks_like_greeting(text):
 def _build_candidates_message(candidates):
 	"""Build numbered top-3 suggestion text to allow easy user selection."""
 	lines = [
-		"I found a few close matches. Reply with the number or business name:",
+		"I found a few close matches — pick the one you meant:",
 	]
 	for idx, c in enumerate(candidates, start=1):
 		lines.append(f"{idx}. {c.get('label')}")

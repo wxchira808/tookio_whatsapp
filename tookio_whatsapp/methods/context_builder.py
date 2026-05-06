@@ -50,28 +50,44 @@ def get_business_context(business_name, integration_name=None, google_sheet_id=N
 		# Try to fetch the Business doctype
 		business_data = {}
 		if business_name:
+			# Defensive lookup: some deployments may not yet have all new columns
+			# (e.g., support_email, ai_*). First try to fetch a small, safe set
+			# of fields; then try to read optional fields individually, ignoring
+			# SQL errors caused by missing columns.
 			try:
+				safe_fields = [
+					"business_name",
+					"business_description",
+					"owner_phone_number",
+					"owner_name",
+					"handoff_keywords",
+				]
 				business = frappe.db.get_value(
 					"Business",
 					business_name,
-					[
-						"business_name",
-						"business_description",
-						"owner_phone_number",
-						"owner_name",
-						"support_email",
-						"support_phone",
-						"ai_tone",
-						"ai_max_reply_length",
-						"ai_custom_instructions",
-						"handoff_keywords",
-					],
+					safe_fields,
 					as_dict=True,
 				)
 				if business:
 					business_data = business
 			except Exception as e:
-				frappe.log_error("Business doctype lookup failed", str(e))
+				frappe.log_error("Business doctype lookup failed (safe fields)", str(e))
+			# Attempt to read optional fields one-by-one and ignore failures
+			optional_fields = [
+				"support_email",
+				"support_phone",
+				"ai_tone",
+				"ai_max_reply_length",
+				"ai_custom_instructions",
+			]
+			for f in optional_fields:
+				try:
+					val = frappe.db.get_value("Business", business_name, f)
+					if val is not None:
+						business_data[f] = val
+				except Exception:
+					# Column likely missing on this install; skip
+					continue
 		
 		# If no sheet ID provided, try to get from integration
 		if not google_sheet_id and integration_name:
