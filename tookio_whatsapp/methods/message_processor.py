@@ -39,6 +39,11 @@ def process_whatsapp_message(message_id):
 
 		# Reset business selection after ~7 hours so one customer can talk to multiple businesses in a day.
 		# Use defensive access because the DB schema may not yet include the new field on some installs.
+		conversation_has_assignment_field = False
+		try:
+			conversation_has_assignment_field = conversation.meta.has_field("business_assigned_at")
+		except Exception:
+			conversation_has_assignment_field = False
 		assigned_at = None
 		try:
 			# Prefer Document-style .get (works for both dict-like and Document objects)
@@ -56,11 +61,9 @@ def process_whatsapp_message(message_id):
 			elapsed = (datetime.now() - assigned_at).total_seconds() / 3600
 			if elapsed > 7:
 				conversation.business = None
-				# defensive save: only set attribute if writable
-				try:
+				if conversation_has_assignment_field:
+					# defensive save: only set attribute if the field exists on this site
 					conversation.business_assigned_at = None
-				except Exception:
-					pass
 				conversation.save(ignore_permissions=True)
 
 		# If no business selected yet:
@@ -130,7 +133,8 @@ def process_whatsapp_message(message_id):
 
 			# Business matched: persist and send one-time welcome template.
 			conversation.business = possible_business
-			conversation.business_assigned_at = datetime.now()
+			if conversation_has_assignment_field:
+				conversation.business_assigned_at = datetime.now()
 			conversation.save(ignore_permissions=True)
 
 			context = get_business_context(
