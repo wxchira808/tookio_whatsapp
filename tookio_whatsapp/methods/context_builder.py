@@ -4,34 +4,50 @@
 import json
 import requests
 import frappe
+from datetime import datetime, timedelta
 
 
-def get_business_context(integration_name):
+def needs_business_selection(conversation):
+	"""
+	Check if conversation needs to ask for business selection.
+	Returns True if:
+	- Business not assigned, OR
+	- Business assigned > 7 hours ago
+	"""
+	if not conversation.get("business"):
+		return True
+	
+	assigned_at = conversation.get("business_assigned_at")
+	if not assigned_at:
+		return True
+	
+	# Parse datetime if it's a string
+	if isinstance(assigned_at, str):
+		try:
+			assigned_at = datetime.fromisoformat(assigned_at)
+		except Exception:
+			return True
+	
+	# Check if > 7 hours old
+	hours_elapsed = (datetime.now() - assigned_at).total_seconds() / 3600
+	return hours_elapsed > 7
+
+
+def get_business_context(business_name, integration_name=None, google_sheet_id=None, google_sheet_range=None):
 	"""
 	Fetch full business context: name, description, support details, and AI behavior settings.
 	
 	Args:
-		integration_name (str): Name of WhatsApp Integration
+		business_name (str): Name of Business doctype
+		integration_name (str): Optional integration name (for fallback sheet config)
+		google_sheet_id (str): Optional sheet ID override
+		google_sheet_range (str): Optional sheet range override
 		
 	Returns:
 		dict: Business context including name, description, support_email, owner info, AI settings
 	"""
 	try:
-		# Get the integration
-		integration = frappe.db.get_value(
-			"WhatsApp Integration",
-			integration_name,
-			["business_name", "google_sheet_id", "google_sheet_range"],
-			as_dict=True,
-		)
-		
-		if not integration:
-			frappe.log_error("Integration not found", f"WhatsApp Integration {integration_name}")
-			return {}
-		
-		business_name = integration.get("business_name", "")
-		
-		# Try to fetch the Business doctype if it exists and is linked
+		# Try to fetch the Business doctype
 		business_data = {}
 		if business_name:
 			try:
@@ -55,22 +71,37 @@ def get_business_context(integration_name):
 				if business:
 					business_data = business
 			except Exception as e:
-				frappe.log_error("Business doctype lookup failed (may not exist)", str(e))
+				frappe.log_error("Business doctype lookup failed", str(e))
+		
+		# If no sheet ID provided, try to get from integration
+		if not google_sheet_id and integration_name:
+			try:
+				integration = frappe.db.get_value(
+					"WhatsApp Integration",
+					integration_name,
+					["google_sheet_id", "google_sheet_range"],
+					as_dict=True,
+				)
+				if integration:
+					google_sheet_id = integration.get("google_sheet_id")
+					google_sheet_range = integration.get("google_sheet_range")
+			except Exception:
+				pass
 		
 		# Build context dict
 		context = {
-			"business_name": business_data.get("business_name") or integration.get("business_name"),
+			"business_name": business_data.get("business_name") or business_name,
 			"business_description": business_data.get("business_description", ""),
 			"owner_name": business_data.get("owner_name", ""),
 			"owner_phone": business_data.get("owner_phone_number", ""),
 			"support_email": business_data.get("support_email", ""),
 			"support_phone": business_data.get("support_phone", ""),
-			"ai_tone": business_data.get("ai_tone", "professional"),  # default: professional
-			"ai_max_reply_length": business_data.get("ai_max_reply_length") or 150,  # default: 150 tokens
+			"ai_tone": business_data.get("ai_tone", "casual"),  # default: casual
+			"ai_max_reply_length": business_data.get("ai_max_reply_length") or 100,  # default: 100 tokens (shorter!)
 			"ai_custom_instructions": business_data.get("ai_custom_instructions", ""),
 			"handoff_keywords": business_data.get("handoff_keywords", ""),
-			"google_sheet_id": integration.get("google_sheet_id", ""),
-			"google_sheet_range": integration.get("google_sheet_range", "Products!A1:E100"),
+			"google_sheet_id": google_sheet_id or "",
+			"google_sheet_range": google_sheet_range or "Products!A1:E100",
 		}
 		
 		return context
@@ -148,63 +179,69 @@ def get_product_catalogue(sheet_id, sheet_range, oauth_token=None):
 		return ""
 
 
-def build_ai_system_prompt(business_context, product_info=""):
+def build_ai_system_prompt(business_context, product_info="", is_first_message=False):
 	"""
 	Build the system prompt for AI with business context and personality.
 	
 	Args:
 		business_context (dict): From get_business_context()
 		product_info (str): From get_product_catalogue()
+		is_first_message (bool): True if this is the first message in conversation
 		
 	Returns:
 		str: System prompt for Gemini
 	"""
 	business_name = business_context.get("business_name", "Customer Service")
 	business_desc = business_context.get("business_description", "")
-	owner_name = business_context.get("owner_name", "")
 	support_email = business_context.get("support_email", "")
 	support_phone = business_context.get("support_phone", "")
-	ai_tone = business_context.get("ai_tone", "professional")
+	ai_tone = business_context.get("ai_tone", "casual")
 	custom_instructions = business_context.get("ai_custom_instructions", "")
 	
 	prompt_lines = []
 	
 	# Core identity
-	prompt_lines.append(f"You are a customer service representative for {business_name}.")
+	prompt_lines.append(f"You are a customer service rep for {business_name}.")
 	
-	# Business description
+	# Business description (short context only)
 	if business_desc:
-		prompt_lines.append(f"About us: {business_desc}")
+		prompt_lines.append(f"{business_desc}")
 	
-	# Tone/personality
+	# Tone/personality - simplified
 	if ai_tone == "casual":
-		prompt_lines.append("Your tone is friendly, casual, and conversational. Use simple language and emojis sparingly. Keep it human and warm.")
+		prompt_lines.append("Be casual, friendly, and conversational. Keep it short and human. No formal stuff unless asked.")
 	elif ai_tone == "formal":
-		prompt_lines.append("Your tone is professional, formal, and courteous. Use proper grammar and maintain a business-like demeanor.")
+		prompt_lines.append("Be professional and formal. Use proper grammar and courteous language.")
 	elif ai_tone == "concise":
-		prompt_lines.append("Your responses are very brief and to the point. 1-2 sentences max. No fluff.")
+		prompt_lines.append("Keep replies super short (1-2 sentences max). No fluff.")
 	else:  # professional (default)
-		prompt_lines.append("Your tone is professional and helpful. Be clear and concise.")
+		prompt_lines.append("Be helpful and professional. Keep it concise.")
 	
-	# Support details
+	# IMPORTANT: Only greet on first message
+	if is_first_message:
+		prompt_lines.append("Since this is the first message, greet them warmly but briefly.")
+	else:
+		prompt_lines.append("This is NOT the first message. Do NOT greet them or say 'thank you for reaching out' or 'regards' or any formal closing. Just answer their question directly.")
+	
+	# Support details (if available)
 	if support_email or support_phone:
-		support_line = "For additional support, customers can contact:"
+		support_line = "For urgent issues, customers can reach support at:"
 		if support_email:
-			support_line += f" email: {support_email}"
+			support_line += f" {support_email}"
 		if support_phone:
-			support_line += f" phone: {support_phone}"
+			support_line += f" or {support_phone}"
 		prompt_lines.append(support_line)
 	
 	# Product info
 	if product_info:
 		prompt_lines.append("\n" + product_info)
 	
-	# Custom instructions (override everything)
+	# Custom instructions (can override everything)
 	if custom_instructions:
-		prompt_lines.append("\nSpecial Instructions:")
+		prompt_lines.append("\nSpecial instructions for this business:")
 		prompt_lines.append(custom_instructions)
 	
 	# Closing instruction
-	prompt_lines.append("\nRespond helpfully and stay in character. If you cannot help, suggest the customer contact support.")
+	prompt_lines.append("\nStay in character and be helpful. Keep replies short and natural.")
 	
 	return "\n".join(prompt_lines)

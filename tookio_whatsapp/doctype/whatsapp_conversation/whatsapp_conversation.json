@@ -13,6 +13,8 @@
     "column_break_1",
     "customer_name",
     "message_count",
+    "business",
+    "business_assigned_at",
     "section_break_status",
     "conversation_state",
     "last_message",
@@ -55,6 +57,17 @@
       "fieldname": "message_count",
       "fieldtype": "Int",
       "label": "Message Count"
+    },
+    {
+      "fieldname": "business",
+      "fieldtype": "Link",
+      "label": "Business",
+      "options": "Business"
+    },
+    {
+      "fieldname": "business_assigned_at",
+      "fieldtype": "Datetime",
+      "label": "Business Assigned At"
     },
     {
       "fieldname": "section_break_status",

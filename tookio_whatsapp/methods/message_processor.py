@@ -35,6 +35,56 @@ def process_whatsapp_message(message_id):
 			message.conversation = conversation.name
 			message.save(ignore_permissions=True)
 
+		# Check if business needs to be selected (first message or > 7 hours old)
+		from .context_builder import needs_business_selection
+		if needs_business_selection(conversation.as_dict()):
+			# Send prompt asking for business name
+			response_text = f"Hi {message.customer_name}, thank you for reaching out to us. Which business would you like assistance with?"
+			_send_whatsapp_message(
+				phone_number_id=integration.phone_number_id,
+				to_phone=message.from_phone,
+				text=response_text,
+				access_token=integration.access_token,
+			)
+			# Mark as processed but don't generate AI response
+			message.processed = True
+			message.response_text = response_text
+			message.response_sent_at = datetime.now()
+			message.save(ignore_permissions=True)
+			
+			# Update conversation
+			conversation.message_count = (conversation.message_count or 0) + 1
+			conversation.last_message = message.text_content
+			conversation.last_message_at = datetime.now()
+			conversation.save(ignore_permissions=True)
+			return
+		
+		# If business is asking for business name, extract it from their message
+		if not conversation.business or (conversation.business_assigned_at and _is_awaiting_business_name(conversation)):
+			# Try to match their message to a known business
+			possible_business = _find_business_by_name(message.text_content)
+			if possible_business:
+				conversation.business = possible_business
+				conversation.business_assigned_at = datetime.now()
+				conversation.save(ignore_permissions=True)
+			else:
+				# Send error asking to clarify
+				response_text = f"Sorry, I didn't recognize that business. Could you spell the business name again?"
+				_send_whatsapp_message(
+					phone_number_id=integration.phone_number_id,
+					to_phone=message.from_phone,
+					text=response_text,
+					access_token=integration.access_token,
+				)
+				message.processed = True
+				message.response_text = response_text
+				message.response_sent_at = datetime.now()
+				message.save(ignore_permissions=True)
+				return
+		
+		# Now we have a business assigned. Proceed with normal AI processing.
+		business_name = conversation.business
+		
 		gemini_config = _get_gemini_config(integration)
 		if not gemini_config:
 			return
@@ -45,8 +95,12 @@ def process_whatsapp_message(message_id):
 			temperature=gemini_config["temperature"],
 		)
 
-		# Fetch business context (name, description, support details, AI behavior)
-		business_context = get_business_context(message.integration)
+		# Fetch business context using the assigned business name
+		from .context_builder import get_business_context, get_product_catalogue, build_ai_system_prompt
+		business_context = get_business_context(
+			business_name=business_name,
+			integration_name=message.integration,
+		)
 		
 		# Fetch product catalogue from Google Sheets
 		product_info = get_product_catalogue(
@@ -54,8 +108,11 @@ def process_whatsapp_message(message_id):
 			business_context.get("google_sheet_range", ""),
 		)
 		
+		# Check if this is the first message TO THIS BUSINESS (message_count == 1)
+		is_first_msg = conversation.message_count == 0
+		
 		# Build system prompt with business context
-		system_prompt = build_ai_system_prompt(business_context, product_info)
+		system_prompt = build_ai_system_prompt(business_context, product_info, is_first_message=is_first_msg)
 		
 		recent_messages = _get_recent_messages(conversation.name)
 		
@@ -68,13 +125,13 @@ def process_whatsapp_message(message_id):
 		)
 
 		# Check if handoff is needed before calling Gemini
-		business = frappe.get_doc("Business", conversation.business) if conversation.business else None
+		business = frappe.get_doc("Business", business_name) if business_name else None
 		handoff_reason = _check_handoff_trigger(message.text_content, business)
 
 		if handoff_reason:
 			# Trigger handoff instead of AI response
 			_create_handoff(
-				business_name=conversation.business,
+				business_name=business_name,
 				conversation_name=conversation.name,
 				message_id=message_id,
 				reason=handoff_reason,
@@ -91,7 +148,7 @@ def process_whatsapp_message(message_id):
 
 		ai_response = gemini.generate_response(
 			prompt,
-			max_tokens=business_context.get("ai_max_reply_length", 150),
+			max_tokens=business_context.get("ai_max_reply_length", 100),
 			timeout=gemini_config["timeout_seconds"],
 		)
 		if not ai_response:
@@ -300,6 +357,60 @@ def _update_conversation(conversation_name, last_message, customer_name=None):
 		conversation.save(ignore_permissions=True)
 	except Exception as e:
 		frappe.log_error("Conversation update failed", str(e))
+
+
+def _is_awaiting_business_name(conversation):
+	"""Check if conversation was recently asked for business name (no AI response yet)."""
+	# This is a heuristic: if business was assigned < 2 minutes ago, we're likely awaiting their response
+	if not conversation.get("business_assigned_at"):
+		return False
+	
+	from datetime import datetime, timedelta
+	assigned_at = conversation.get("business_assigned_at")
+	if isinstance(assigned_at, str):
+		try:
+			assigned_at = datetime.fromisoformat(assigned_at)
+		except Exception:
+			return False
+	
+	minutes_elapsed = (datetime.now() - assigned_at).total_seconds() / 60
+	return minutes_elapsed < 2
+
+
+def _find_business_by_name(text):
+	"""
+	Try to find a Business doctype matching the customer's text.
+	Does fuzzy matching on business names.
+	"""
+	if not text or len(text.strip()) < 2:
+		return None
+	
+	try:
+		# Get all enabled businesses
+		businesses = frappe.get_all(
+			"Business",
+			filters={"enabled": 1},
+			fields=["name", "business_name"],
+			limit_page_length=100,
+		)
+		
+		text_lower = text.lower().strip()
+		
+		# Try exact match first
+		for b in businesses:
+			if b["business_name"].lower() == text_lower:
+				return b["name"]
+		
+		# Try substring match
+		for b in businesses:
+			if text_lower in b["business_name"].lower():
+				return b["name"]
+		
+		return None
+	
+	except Exception as e:
+		frappe.log_error("Error finding business by name", str(e))
+		return None
 
 
 def _check_handoff_trigger(customer_message, business=None):
