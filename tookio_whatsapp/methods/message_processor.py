@@ -49,7 +49,7 @@ def process_whatsapp_message(message_id):
 		# If no business selected yet:
 		if not conversation.business:
 			# First ever message in this conversation: ask for business name once.
-			if (conversation.message_count or 0) == 0:
+			if (conversation.message_count or 0) == 0 or _looks_like_greeting(message.text_content):
 				response_text = (
 					f"Hi {message.customer_name}, thank you for reaching out to us, "
 					"kindly assist us with the business name and whatever product you are trying to buy."
@@ -80,14 +80,20 @@ def process_whatsapp_message(message_id):
 			if not possible_business:
 				possible_business = _find_business_by_name(message.text_content)
 			if not possible_business:
-				candidates = _get_business_candidates(message.text_content, limit=3)
-				if candidates:
-					response_text = _build_candidates_message(candidates)
-				else:
+				if not _has_any_business_records():
 					response_text = (
-						"I couldn't find that business name yet. Please type the business name again "
-						"(for example: Tio's Galore or Busy Works Beats)."
+						"I cannot find any Business profiles configured yet. "
+						"Please ask the admin to create at least one Business record first."
 					)
+				else:
+					candidates = _get_business_candidates(message.text_content, limit=3)
+					if candidates:
+						response_text = _build_candidates_message(candidates)
+					else:
+						response_text = (
+							"I couldn't find that business name yet. Please type the business name again "
+							"(for example: Tio's Galore or Busy Works Beats)."
+						)
 				_send_whatsapp_message(
 					phone_number_id=integration.phone_number_id,
 					to_phone=message.from_phone,
@@ -422,13 +428,7 @@ def _find_business_by_name(text):
 		return None
 	
 	try:
-		# Get all enabled businesses
-		businesses = frappe.get_all(
-			"Business",
-			filters={"enabled": 1},
-			fields=["name", "business_name"],
-			limit_page_length=100,
-		)
+		businesses = _get_business_records_for_matching(limit=200)
 
 		if not businesses:
 			return None
@@ -472,12 +472,7 @@ def _get_business_candidates(text, limit=3):
 		return []
 
 	try:
-		businesses = frappe.get_all(
-			"Business",
-			filters={"enabled": 1},
-			fields=["name", "business_name"],
-			limit_page_length=200,
-		)
+		businesses = _get_business_records_for_matching(limit=300)
 		if not businesses:
 			return []
 
@@ -505,6 +500,57 @@ def _get_business_candidates(text, limit=3):
 	except Exception as e:
 		frappe.log_error("Error generating business candidates", str(e))
 		return []
+
+
+def _get_business_records_for_matching(limit=200):
+	"""Return businesses with enabled records first, then any remaining records."""
+	enabled = frappe.get_all(
+		"Business",
+		filters={"enabled": 1},
+		fields=["name", "business_name"],
+		limit_page_length=limit,
+	)
+	if enabled:
+		return enabled
+
+	# Fallback to all Business records if none are enabled.
+	return frappe.get_all(
+		"Business",
+		fields=["name", "business_name"],
+		limit_page_length=limit,
+	)
+
+
+def _has_any_business_records():
+	"""Return True if at least one Business record exists."""
+	try:
+		return bool(frappe.db.exists("Business", {}))
+	except Exception:
+		return False
+
+
+def _looks_like_greeting(text):
+	"""Detect short greeting-only inputs so we don't treat them as business names."""
+	t = (text or "").strip().lower()
+	if not t:
+		return True
+
+	greetings = {
+		"hi", "hey", "hello", "yo", "good morning", "good afternoon", "good evening", "hiya", "hallo",
+	}
+	# Remove punctuation/noise for robust greeting checks.
+	t_clean = re.sub(r"[^a-z0-9\s]+", "", t)
+	t_clean = " ".join(t_clean.split())
+
+	if t_clean in greetings:
+		return True
+
+	# Handle forms like "hi there", "hello there"
+	if t_clean.startswith("hi ") or t_clean.startswith("hello ") or t_clean.startswith("hey "):
+		if len(t_clean.split()) <= 3:
+			return True
+
+	return False
 
 
 def _build_candidates_message(candidates):
