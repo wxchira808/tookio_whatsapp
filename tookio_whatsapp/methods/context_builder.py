@@ -66,6 +66,9 @@ def get_business_context(business_name, integration_name=None, google_sheet_id=N
 					"ai_tone",
 					"ai_max_reply_length",
 					"ai_custom_instructions",
+					"google_sheet_id",
+					"google_sheet_range",
+					"google_api_key",
 				]
 				available_fields = [field for field in requested_fields if meta.has_field(field)]
 				if available_fields:
@@ -97,7 +100,7 @@ def get_business_context(business_name, integration_name=None, google_sheet_id=N
 			except Exception:
 				pass
 		
-		# Build context dict
+		# Build context dict (prefer business-scoped sheet/key if present)
 		context = {
 			"business_name": business_data.get("business_name") or business_name,
 			"business_description": business_data.get("business_description", ""),
@@ -109,8 +112,9 @@ def get_business_context(business_name, integration_name=None, google_sheet_id=N
 			"ai_max_reply_length": business_data.get("ai_max_reply_length") or 100,  # default: 100 tokens (shorter!)
 			"ai_custom_instructions": business_data.get("ai_custom_instructions", ""),
 			"handoff_keywords": business_data.get("handoff_keywords", ""),
-			"google_sheet_id": google_sheet_id or "",
-			"google_sheet_range": google_sheet_range or "Products!A1:E100",
+			"google_sheet_id": business_data.get("google_sheet_id") or google_sheet_id or "",
+			"google_sheet_range": business_data.get("google_sheet_range") or google_sheet_range or "Products!A1:E100",
+			"google_api_key": business_data.get("google_api_key", ""),
 		}
 		
 		return context
@@ -120,7 +124,7 @@ def get_business_context(business_name, integration_name=None, google_sheet_id=N
 		return {}
 
 
-def get_product_catalogue(sheet_id, sheet_range, oauth_token=None, integration_name=None):
+def get_product_catalogue(sheet_id, sheet_range, oauth_token=None, integration_name=None, api_key=None):
 	"""
 	Fetch product catalogue from Google Sheets.
 	
@@ -144,22 +148,23 @@ def get_product_catalogue(sheet_id, sheet_range, oauth_token=None, integration_n
 		# If you have a Gemini API key, you can reuse it as a Google API key if it's multi-service.
 		# Better approach: store a separate Google API key in site_config or integration config.
 		
-		# Try to get API key from site config first, then integration-level key.
-		api_key = frappe.conf.get("google_sheets_api_key") or frappe.conf.get("google_api_key")
-		if not api_key and integration_name:
-			try:
-				integration = frappe.db.get_value(
-					"WhatsApp Integration",
-					integration_name,
-					["google_api_key"],
-					as_dict=True,
-				)
-				if integration:
-					api_key = integration.get("google_api_key") or ""
-			except Exception:
-				pass
+		# Prefer an explicit api_key passed in from business context. Otherwise
+		# fall back to integration-level or site_config keys.
 		if not api_key:
-			# Sheets enrichment is optional. Skip quietly if the site has no key.
+			api_key = frappe.conf.get("google_sheets_api_key") or frappe.conf.get("google_api_key")
+			if not api_key and integration_name:
+				try:
+					integration = frappe.db.get_value(
+						"WhatsApp Integration",
+						integration_name,
+						["google_api_key"],
+						as_dict=True,
+					)
+					if integration:
+						api_key = integration.get("google_api_key") or ""
+				except Exception:
+					pass
+		if not api_key:
 			frappe.logger().info("Skipping Google Sheets catalogue fetch because no Google API key is configured")
 			return ""
 		

@@ -18,6 +18,9 @@
   "section_config",
   "gemini_profile",
   "business_description",
+  "google_sheet_id",
+  "google_sheet_range",
+  "google_api_key",
   "section_ai_behavior",
   "ai_tone",
   "ai_max_reply_length",
@@ -88,6 +91,24 @@
    "fieldtype": "Long Text",
    "label": "Business Description",
    "description": "What the business does; used in AI system prompt"
+  },
+  {
+   "fieldname": "google_sheet_id",
+   "fieldtype": "Data",
+   "label": "Google Sheet ID",
+   "description": "Optional: Google Sheet ID for this business's product catalogue"
+  },
+  {
+   "fieldname": "google_sheet_range",
+   "fieldtype": "Data",
+   "label": "Google Sheet Range",
+   "default": "Products!A1:E100"
+  },
+  {
+   "fieldname": "google_api_key",
+   "fieldtype": "Small Text",
+   "label": "Google API Key",
+   "description": "Optional: API key to read private sheets for this business"
   },
   {
    "fieldname": "section_ai_behavior",
