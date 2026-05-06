@@ -7,6 +7,7 @@ import frappe
 import requests
 
 from .gemini_client import GeminiClient
+from .context_builder import get_business_context, get_product_catalogue, build_ai_system_prompt
 
 
 @frappe.whitelist()
@@ -44,12 +45,25 @@ def process_whatsapp_message(message_id):
 			temperature=gemini_config["temperature"],
 		)
 
+		# Fetch business context (name, description, support details, AI behavior)
+		business_context = get_business_context(message.integration)
+		
+		# Fetch product catalogue from Google Sheets
+		product_info = get_product_catalogue(
+			business_context.get("google_sheet_id", ""),
+			business_context.get("google_sheet_range", ""),
+		)
+		
+		# Build system prompt with business context
+		system_prompt = build_ai_system_prompt(business_context, product_info)
+		
 		recent_messages = _get_recent_messages(conversation.name)
+		
+		# Build the full prompt combining system prompt and user message
 		prompt = _build_prompt(
+			system_prompt=system_prompt,
 			customer_message=message.text_content,
 			customer_name=message.customer_name,
-			business_name=integration.business_name,
-			product_info="",
 			conversation_history=recent_messages,
 		)
 
@@ -77,7 +91,7 @@ def process_whatsapp_message(message_id):
 
 		ai_response = gemini.generate_response(
 			prompt,
-			max_tokens=gemini_config["max_output_tokens"],
+			max_tokens=business_context.get("ai_max_reply_length", 150),
 			timeout=gemini_config["timeout_seconds"],
 		)
 		if not ai_response:
@@ -226,19 +240,17 @@ def _get_recent_messages(conversation_name, limit=4):
 		return ""
 
 
-def _build_prompt(customer_message, customer_name, business_name, product_info, conversation_history=""):
-	"""Build the prompt for Gemini."""
-	prompt = f"""You are a customer service representative for {business_name}.
-
-Customer Name: {customer_name}
-Customer Message: {customer_message}
-
-{f'Conversation History:\n{conversation_history}\n' if conversation_history else ''}
-{f'Available Products: {product_info}' if product_info else ''}
-
-Respond helpfully and professionally. Keep response under 150 words.
-If you can't help, politely suggest they contact support."""
-
+def _build_prompt(system_prompt, customer_message, customer_name, conversation_history=""):
+	"""Build the full prompt for Gemini using system prompt + customer message + history."""
+	prompt = system_prompt
+	
+	if conversation_history:
+		prompt += f"\n\nPrevious Conversation:\n{conversation_history}"
+	
+	prompt += f"\n\nCustomer Name: {customer_name}"
+	prompt += f"\nCustomer Message: {customer_message}"
+	prompt += "\n\nRespond in your established tone. Keep it concise and relevant to their question."
+	
 	return prompt
 
 

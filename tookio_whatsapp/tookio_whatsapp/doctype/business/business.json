@@ -13,9 +13,15 @@
   "owner_name",
   "owner_email",
   "owner_phone_number",
+  "support_email",
+  "support_phone",
   "section_config",
   "gemini_profile",
   "business_description",
+  "section_ai_behavior",
+  "ai_tone",
+  "ai_max_reply_length",
+  "ai_custom_instructions",
   "handoff_keywords"
  ],
  "fields": [
@@ -55,6 +61,18 @@
    "description": "Without country code prefix; e.g., 254732662420"
   },
   {
+   "fieldname": "support_email",
+   "fieldtype": "Data",
+   "label": "Support Email",
+   "description": "Email for customer support; shown in AI responses"
+  },
+  {
+   "fieldname": "support_phone",
+   "fieldtype": "Data",
+   "label": "Support Phone",
+   "description": "Phone for customer support; shown in AI responses"
+  },
+  {
    "fieldname": "section_config",
    "fieldtype": "Section Break",
    "label": "AI Configuration"
@@ -70,6 +88,32 @@
    "fieldtype": "Long Text",
    "label": "Business Description",
    "description": "What the business does; used in AI system prompt"
+  },
+  {
+   "fieldname": "section_ai_behavior",
+   "fieldtype": "Section Break",
+   "label": "AI Behavior & Personality"
+  },
+  {
+   "default": "professional",
+   "fieldname": "ai_tone",
+   "fieldtype": "Select",
+   "label": "AI Tone",
+   "options": "professional\ncasual\nformal\nconcise",
+   "description": "How the AI should respond: professional (balanced), casual (friendly), formal (courteous), or concise (short)"
+  },
+  {
+   "default": 150,
+   "fieldname": "ai_max_reply_length",
+   "fieldtype": "Int",
+   "label": "Max Reply Length (tokens)",
+   "description": "Maximum tokens per AI response (e.g., 150 = ~500 chars)"
+  },
+  {
+   "fieldname": "ai_custom_instructions",
+   "fieldtype": "Long Text",
+   "label": "Custom AI Instructions",
+   "description": "Special instructions for your AI (e.g., always mention warranty, never promise refunds, etc.)"
   },
   {
    "fieldname": "handoff_keywords",
