@@ -37,8 +37,7 @@ class GoogleSheetsClient:
 		"""
 		try:
 			if not self.api_key:
-				frappe.log_error("Google Sheets", "API key not configured")
-				return []
+			frappe.logger().info("Skipping Google Sheets fetch because no API key is configured")
 			
 			url = f"{self.base_url}/{self.sheet_id}/values/{quote(sheet_range)}"
 			params = {"key": self.api_key}
@@ -146,7 +145,7 @@ def fetch_products_for_integration(integration_name):
 		
 		client = GoogleSheetsClient(
 			sheet_id=integration.google_sheet_id,
-			api_key=frappe.conf.get("google_api_key")
+			api_key=integration.get("google_api_key") or frappe.conf.get("google_api_key") or frappe.conf.get("google_sheets_api_key")
 		)
 		
 		products = client.fetch_products(

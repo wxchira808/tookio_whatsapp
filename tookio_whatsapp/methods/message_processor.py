@@ -187,6 +187,7 @@ def process_whatsapp_message(message_id):
 		product_info = get_product_catalogue(
 			business_context.get("google_sheet_id", ""),
 			business_context.get("google_sheet_range", ""),
+			integration_name=message.integration,
 		)
 		
 		# Check if this is the first message TO THIS BUSINESS (message_count == 1)

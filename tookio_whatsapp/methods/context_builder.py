@@ -80,8 +80,8 @@ def get_business_context(business_name, integration_name=None, google_sheet_id=N
 			except Exception as e:
 				frappe.log_error("Business doctype lookup failed", str(e))
 		
-		# If no sheet ID provided, try to get from integration
-		if not google_sheet_id and integration_name:
+		# If no sheet ID provided, try to get the sheet details from integration.
+		if integration_name:
 			try:
 				integration = frappe.db.get_value(
 					"WhatsApp Integration",
@@ -90,8 +90,10 @@ def get_business_context(business_name, integration_name=None, google_sheet_id=N
 					as_dict=True,
 				)
 				if integration:
-					google_sheet_id = integration.get("google_sheet_id")
-					google_sheet_range = integration.get("google_sheet_range")
+					if not google_sheet_id:
+						google_sheet_id = integration.get("google_sheet_id")
+					if not google_sheet_range:
+						google_sheet_range = integration.get("google_sheet_range")
 			except Exception:
 				pass
 		
@@ -118,7 +120,7 @@ def get_business_context(business_name, integration_name=None, google_sheet_id=N
 		return {}
 
 
-def get_product_catalogue(sheet_id, sheet_range, oauth_token=None):
+def get_product_catalogue(sheet_id, sheet_range, oauth_token=None, integration_name=None):
 	"""
 	Fetch product catalogue from Google Sheets.
 	
@@ -142,11 +144,23 @@ def get_product_catalogue(sheet_id, sheet_range, oauth_token=None):
 		# If you have a Gemini API key, you can reuse it as a Google API key if it's multi-service.
 		# Better approach: store a separate Google API key in site_config or integration config.
 		
-		# Try to get API key from site config
-		api_key = frappe.conf.get("google_sheets_api_key")
+		# Try to get API key from site config first, then integration-level key.
+		api_key = frappe.conf.get("google_sheets_api_key") or frappe.conf.get("google_api_key")
+		if not api_key and integration_name:
+			try:
+				integration = frappe.db.get_value(
+					"WhatsApp Integration",
+					integration_name,
+					["google_api_key"],
+					as_dict=True,
+				)
+				if integration:
+					api_key = integration.get("google_api_key") or ""
+			except Exception:
+				pass
 		if not api_key:
 			# Sheets enrichment is optional. Skip quietly if the site has no key.
-			frappe.logger().info("Skipping Google Sheets catalogue fetch because google_sheets_api_key is not configured")
+			frappe.logger().info("Skipping Google Sheets catalogue fetch because no Google API key is configured")
 			return ""
 		
 		params = {"key": api_key}
