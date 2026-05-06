@@ -2,6 +2,8 @@
 # For license information, please see license.txt
 
 from datetime import datetime
+import difflib
+import re
 
 import frappe
 import requests
@@ -35,41 +37,23 @@ def process_whatsapp_message(message_id):
 			message.conversation = conversation.name
 			message.save(ignore_permissions=True)
 
-		# Check if business needs to be selected (first message or > 7 hours old)
-		from .context_builder import needs_business_selection
-		if needs_business_selection(conversation.as_dict()):
-			# Send prompt asking for business name
-			response_text = f"Hi {message.customer_name}, thank you for reaching out to us. Which business would you like assistance with?"
-			_send_whatsapp_message(
-				phone_number_id=integration.phone_number_id,
-				to_phone=message.from_phone,
-				text=response_text,
-				access_token=integration.access_token,
-			)
-			# Mark as processed but don't generate AI response
-			message.processed = True
-			message.response_text = response_text
-			message.response_sent_at = datetime.now()
-			message.save(ignore_permissions=True)
-			
-			# Update conversation
-			conversation.message_count = (conversation.message_count or 0) + 1
-			conversation.last_message = message.text_content
-			conversation.last_message_at = datetime.now()
-			conversation.save(ignore_permissions=True)
-			return
-		
-		# If business is asking for business name, extract it from their message
-		if not conversation.business or (conversation.business_assigned_at and _is_awaiting_business_name(conversation)):
-			# Try to match their message to a known business
-			possible_business = _find_business_by_name(message.text_content)
-			if possible_business:
-				conversation.business = possible_business
-				conversation.business_assigned_at = datetime.now()
+		# Reset business selection after ~7 hours so one customer can talk to multiple businesses in a day.
+		if conversation.business and conversation.business_assigned_at:
+			assigned_at = conversation.business_assigned_at
+			elapsed = (datetime.now() - assigned_at).total_seconds() / 3600
+			if elapsed > 7:
+				conversation.business = None
+				conversation.business_assigned_at = None
 				conversation.save(ignore_permissions=True)
-			else:
-				# Send error asking to clarify
-				response_text = f"Sorry, I didn't recognize that business. Could you spell the business name again?"
+
+		# If no business selected yet:
+		if not conversation.business:
+			# First ever message in this conversation: ask for business name once.
+			if (conversation.message_count or 0) == 0:
+				response_text = (
+					f"Hi {message.customer_name}, thank you for reaching out to us, "
+					"kindly assist us with the business name and whatever product you are trying to buy."
+				)
 				_send_whatsapp_message(
 					phone_number_id=integration.phone_number_id,
 					to_phone=message.from_phone,
@@ -80,7 +64,68 @@ def process_whatsapp_message(message_id):
 				message.response_text = response_text
 				message.response_sent_at = datetime.now()
 				message.save(ignore_permissions=True)
+				_update_conversation(
+					conversation_name=conversation.name,
+					last_message=message.text_content,
+					customer_name=message.customer_name,
+				)
 				return
+
+			# After the initial ask, treat incoming text as business selection and match fuzzily.
+			possible_business = _find_business_by_name(message.text_content)
+			if not possible_business:
+				response_text = (
+					"I couldn't find that business name yet. Please type the business name again "
+					"(for example: Tio's Galore or Busy Works Beats)."
+				)
+				_send_whatsapp_message(
+					phone_number_id=integration.phone_number_id,
+					to_phone=message.from_phone,
+					text=response_text,
+					access_token=integration.access_token,
+				)
+				message.processed = True
+				message.response_text = response_text
+				message.response_sent_at = datetime.now()
+				message.save(ignore_permissions=True)
+				_update_conversation(
+					conversation_name=conversation.name,
+					last_message=message.text_content,
+					customer_name=message.customer_name,
+				)
+				return
+
+			# Business matched: persist and send one-time welcome template.
+			conversation.business = possible_business
+			conversation.business_assigned_at = datetime.now()
+			conversation.save(ignore_permissions=True)
+
+			context = get_business_context(
+				business_name=possible_business,
+				integration_name=message.integration,
+			)
+			business_label = context.get("business_name") or possible_business
+			business_desc = (context.get("business_description") or "our products and services").strip()
+			response_text = (
+				f"Welcome to {business_label}. We handle {business_desc}. "
+				"What would you like assistance with today?"
+			)
+			_send_whatsapp_message(
+				phone_number_id=integration.phone_number_id,
+				to_phone=message.from_phone,
+				text=response_text,
+				access_token=integration.access_token,
+			)
+			message.processed = True
+			message.response_text = response_text
+			message.response_sent_at = datetime.now()
+			message.save(ignore_permissions=True)
+			_update_conversation(
+				conversation_name=conversation.name,
+				last_message=message.text_content,
+				customer_name=message.customer_name,
+			)
+			return
 		
 		# Now we have a business assigned. Proceed with normal AI processing.
 		business_name = conversation.business
@@ -96,7 +141,6 @@ def process_whatsapp_message(message_id):
 		)
 
 		# Fetch business context using the assigned business name
-		from .context_builder import get_business_context, get_product_catalogue, build_ai_system_prompt
 		business_context = get_business_context(
 			business_name=business_name,
 			integration_name=message.integration,
@@ -359,28 +403,10 @@ def _update_conversation(conversation_name, last_message, customer_name=None):
 		frappe.log_error("Conversation update failed", str(e))
 
 
-def _is_awaiting_business_name(conversation):
-	"""Check if conversation was recently asked for business name (no AI response yet)."""
-	# This is a heuristic: if business was assigned < 2 minutes ago, we're likely awaiting their response
-	if not conversation.get("business_assigned_at"):
-		return False
-	
-	from datetime import datetime, timedelta
-	assigned_at = conversation.get("business_assigned_at")
-	if isinstance(assigned_at, str):
-		try:
-			assigned_at = datetime.fromisoformat(assigned_at)
-		except Exception:
-			return False
-	
-	minutes_elapsed = (datetime.now() - assigned_at).total_seconds() / 60
-	return minutes_elapsed < 2
-
-
 def _find_business_by_name(text):
 	"""
 	Try to find a Business doctype matching the customer's text.
-	Does fuzzy matching on business names.
+	Uses exact, substring, and fuzzy matching on normalized names.
 	"""
 	if not text or len(text.strip()) < 2:
 		return None
@@ -393,19 +419,36 @@ def _find_business_by_name(text):
 			fields=["name", "business_name"],
 			limit_page_length=100,
 		)
-		
-		text_lower = text.lower().strip()
-		
-		# Try exact match first
+
+		if not businesses:
+			return None
+
+		def normalize(value):
+			v = (value or "").lower()
+			v = re.sub(r"[^a-z0-9]+", " ", v)
+			return " ".join(v.split())
+
+		text_norm = normalize(text)
+		if not text_norm:
+			return None
+
+		# 1) Exact normalized match
 		for b in businesses:
-			if b["business_name"].lower() == text_lower:
-				return b["name"]
-		
-		# Try substring match
+			if normalize(b.get("business_name")) == text_norm:
+				return b.get("name")
+
+		# 2) Token overlap / substring style match
 		for b in businesses:
-			if text_lower in b["business_name"].lower():
-				return b["name"]
-		
+			bn = normalize(b.get("business_name"))
+			if text_norm in bn or bn in text_norm:
+				return b.get("name")
+
+		# 3) Fuzzy match for typos (e.g. "TioGlaore" -> "Tio's Galore")
+		norm_to_name = {normalize(b.get("business_name")): b.get("name") for b in businesses}
+		matches = difflib.get_close_matches(text_norm, list(norm_to_name.keys()), n=1, cutoff=0.6)
+		if matches:
+			return norm_to_name[matches[0]]
+
 		return None
 	
 	except Exception as e:
