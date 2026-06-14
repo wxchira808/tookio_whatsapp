@@ -122,15 +122,15 @@ def process_whatsapp_message(message_id):
 						"I cannot find any Business profiles configured yet. "
 						"Please ask the admin to create at least one Business record first."
 					)
+				elif _looks_like_greeting(incoming_text) or _looks_like_purchase_intent(incoming_text):
+					response_text = (
+						"Thanks for your message. To continue, please share the business name "
+						"you want to buy from."
+					)
 				else:
-					candidates = _get_business_candidates(incoming_text, limit=3)
-					if candidates:
-						response_text = _build_candidates_message(candidates)
-					else:
-						response_text = (
-							"I couldn't find that business name yet. Please type the business name again "
-							"(for example: Tio's Galore or Busy Works Beats)."
-						)
+					response_text = (
+						"Please share the business name you want to buy from so I can assist you better."
+					)
 				_send_whatsapp_message(
 					phone_number_id=integration.phone_number_id,
 					to_phone=message.from_phone,
@@ -616,6 +616,30 @@ def _build_candidates_message(candidates):
 	for idx, c in enumerate(candidates, start=1):
 		lines.append(f"{idx}. {c.get('label')}")
 	return "\n".join(lines)
+
+
+def _looks_like_purchase_intent(text):
+	"""Detect shopping/order intent so we can prompt for business name without sounding rigid."""
+	t = (text or "").strip().lower()
+	if not t:
+		return False
+
+	t_clean = re.sub(r"[^a-z0-9\s]+", " ", t)
+	t_clean = " ".join(t_clean.split())
+
+	intent_terms = {
+		"buy", "order", "purchase", "price", "cost", "pendant", "product", "item",
+		"available", "delivery", "ship", "shipping", "quote", "pay", "payment",
+	}
+	words = set(t_clean.split())
+	if words & intent_terms:
+		return True
+
+	phrases = [
+		"i want", "i need", "i am trying to buy", "im trying to buy", "do you have",
+		"how much", "can i get", "looking for",
+	]
+	return any(p in t_clean for p in phrases)
 
 
 def _resolve_business_selection_from_previous_prompt(conversation_name, user_text):
