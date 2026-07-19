@@ -76,6 +76,30 @@
    "options": "text\nimage\ndocument\nunsupported"
   },
   {
+   "fieldname": "type",
+   "fieldtype": "Data",
+   "label": "Type",
+   "hidden": 1
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Data",
+   "label": "Reference DocType",
+   "hidden": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Data",
+   "label": "Reference Name",
+   "hidden": 1
+  },
+  {
+   "fieldname": "message",
+   "fieldtype": "Long Text",
+   "label": "Message",
+   "hidden": 1
+  },
+  {
    "fieldname": "text_content",
    "fieldtype": "Long Text",
    "label": "Text Content"
