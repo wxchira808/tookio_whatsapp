@@ -1,15 +1,16 @@
 # Copyright (c) 2026, Tookio and contributors
 # For license information, please see license.txt
 
+import json
 from datetime import datetime
-import difflib
 import re
 
 import frappe
 import requests
 
 from .gemini_client import GeminiClient
-from .context_builder import get_business_context, get_product_catalogue, build_ai_system_prompt
+from .tools import get_gemini_tools, check_inventory, create_quick_sale
+
 
 
 @frappe.whitelist()
@@ -54,116 +55,154 @@ def process_whatsapp_message(message_id):
 			message.conversation = conversation.name
 			message.save(ignore_permissions=True)
 
-		# Reset business selection after ~7 hours so one customer can talk to multiple businesses in a day.
-		# Use defensive access because the DB schema may not yet include the new field on some installs.
-		conversation_has_assignment_field = False
-		try:
-			conversation_has_assignment_field = conversation.meta.has_field("business_assigned_at")
-		except Exception:
-			conversation_has_assignment_field = False
-		assigned_at = None
-		try:
-			# Prefer Document-style .get (works for both dict-like and Document objects)
-			assigned_at = conversation.get("business_assigned_at")
-		except Exception:
-			assigned_at = getattr(conversation, "business_assigned_at", None)
-		if assigned_at:
-			try:
-				if isinstance(assigned_at, str):
-					assigned_at = datetime.fromisoformat(assigned_at)
-			except Exception:
-				# If parsing fails, skip reset logic to avoid throwing
-				assigned_at = None
-		if assigned_at:
-			elapsed = (datetime.now() - assigned_at).total_seconds() / 3600
-			if elapsed > 7:
-				conversation.business = None
-				if conversation_has_assignment_field:
-					# defensive save: only set attribute if the field exists on this site
-					conversation.business_assigned_at = None
-				conversation.save(ignore_permissions=True)
+		# --- LEGACY BUSINESS SELECTION COMMENTED OUT FOR REDESIGN ---
+		# # Reset business selection after ~7 hours so one customer can talk to multiple businesses in a day.
+		# # Use defensive access because the DB schema may not yet include the new field on some installs.
+		# conversation_has_assignment_field = False
+		# try:
+		# 	conversation_has_assignment_field = conversation.meta.has_field("business_assigned_at")
+		# except Exception:
+		# 	conversation_has_assignment_field = False
+		# assigned_at = None
+		# try:
+		# 	# Prefer Document-style .get (works for both dict-like and Document objects)
+		# 	assigned_at = conversation.get("business_assigned_at")
+		# except Exception:
+		# 	assigned_at = getattr(conversation, "business_assigned_at", None)
+		# if assigned_at:
+		# 	try:
+		# 		if isinstance(assigned_at, str):
+		# 			assigned_at = datetime.fromisoformat(assigned_at)
+		# 	except Exception:
+		# 		# If parsing fails, skip reset logic to avoid throwing
+		# 		assigned_at = None
+		# if assigned_at:
+		# 	elapsed = (datetime.now() - assigned_at).total_seconds() / 3600
+		# 	if elapsed > 7:
+		# 		conversation.business = None
+		# 		if conversation_has_assignment_field:
+		# 			# defensive save: only set attribute if the field exists on this site
+		# 			conversation.business_assigned_at = None
+		# 		conversation.save(ignore_permissions=True)
+		# 
+		# # If no business selected yet:
+		# if not conversation.business:
+		# 	# First ever message in this conversation: ask for business name once.
+		# 	if (conversation.message_count or 0) == 0 or _looks_like_greeting(incoming_text):
+		# 		response_text = (
+		# 			f"Hi {message.customer_name}, thank you for reaching out to us, "
+		# 			"kindly assist us with the business name and whatever product you are trying to buy."
+		# 		)
+		# 		_send_whatsapp_message(
+		# 			phone_number_id=integration.phone_number_id,
+		# 			to_phone=message.from_phone,
+		# 			text=response_text,
+		# 			access_token=integration.access_token,
+		# 		)
+		# 		message.processed = True
+		# 		message.response_text = response_text
+		# 		message.response_sent_at = datetime.now()
+		# 		message.save(ignore_permissions=True)
+		# 		_update_conversation(
+		# 			conversation_name=conversation.name,
+		# 			last_message=incoming_text,
+		# 			customer_name=message.customer_name,
+		# 		)
+		# 		return
+		# 
+		# 	# After the initial ask, treat incoming text as business selection and match fuzzily.
+		# 	# Also understand replies like "first one" or "2" from previous suggestions.
+		# 	possible_business = _resolve_business_selection_from_previous_prompt(
+		# 		conversation_name=conversation.name,
+		# 		user_text=incoming_text,
+		# 	)
+		# 	if not possible_business:
+		# 		possible_business = _find_business_by_name(incoming_text)
+		# 	if not possible_business:
+		# 		if not _has_any_business_records():
+		# 			response_text = (
+		# 				"I cannot find any Business profiles configured yet. "
+		# 				"Please ask the admin to create at least one Business record first."
+		# 			)
+		# 		elif _looks_like_greeting(incoming_text) or _looks_like_purchase_intent(incoming_text):
+		# 			response_text = (
+		# 				"Thanks for your message. To continue, please share the business name "
+		# 				"you want to buy from."
+		# 			)
+		# 		else:
+		# 			response_text = (
+		# 				"Please share the business name you want to buy from so I can assist you better."
+		# 			)
+		# 		_send_whatsapp_message(
+		# 			phone_number_id=integration.phone_number_id,
+		# 			to_phone=message.from_phone,
+		# 			text=response_text,
+		# 			access_token=integration.access_token,
+		# 		)
+		# 		message.processed = True
+		# 		message.response_text = response_text
+		# 		message.response_sent_at = datetime.now()
+		# 		message.save(ignore_permissions=True)
+		# 		_update_conversation(
+		# 			conversation_name=conversation.name,
+		# 			last_message=incoming_text,
+		# 			customer_name=message.customer_name,
+		# 		)
+		# 		return
+		# 
+		# 	# Business matched: persist and send one-time welcome template.
+		# 	conversation.business = possible_business
+		# 	if conversation_has_assignment_field:
+		# 		conversation.business_assigned_at = datetime.now()
+		# 	conversation.save(ignore_permissions=True)
+		# 
+		# 	context = get_business_context(
+		# 		business_name=possible_business,
+		# 		integration_name=message.integration,
+		# 	)
+		# 	business_label = context.get("business_name") or possible_business
+		# 	business_desc = (context.get("business_description") or "our products and services").strip()
+		# 	response_text = (
+		# 		f"Welcome to {business_label}. We handle {business_desc}. "
+		# 		"What would you like assistance with today?"
+		# 	)
+		# 	_send_whatsapp_message(
+		# 		phone_number_id=integration.phone_number_id,
+		# 		to_phone=message.from_phone,
+		# 		text=response_text,
+		# 		access_token=integration.access_token,
+		# 	)
+		# 	message.processed = True
+		# 	message.response_text = response_text
+		# 	message.response_sent_at = datetime.now()
+		# 	message.save(ignore_permissions=True)
+		# 	_update_conversation(
+		# 		conversation_name=conversation.name,
+		# 		last_message=incoming_text,
+		# 		customer_name=message.customer_name,
+		# 	)
+		# 	return
+		# 
+		# --- NEW MULTI-TENANT MERCHANT RESOLUTION ---
+		# Find the User by phone number
+		merchant_phone = message.from_phone.replace("+", "")
+		# Grab the last 9 digits (handles 07... vs 2547... format differences)
+		short_phone = merchant_phone[-9:] if len(merchant_phone) >= 9 else merchant_phone
+		
+		# In Frappe, users might have phone or mobile_no
+		users = frappe.db.sql(
+			"""
+			SELECT name, email, full_name 
+			FROM `tabUser` 
+			WHERE REPLACE(mobile_no, '+', '') LIKE %s 
+			   OR REPLACE(phone, '+', '') LIKE %s
+			""",
+			(f"%{short_phone}", f"%{short_phone}"),
+			as_dict=True
+		)
 
-		# If no business selected yet:
-		if not conversation.business:
-			# First ever message in this conversation: ask for business name once.
-			if (conversation.message_count or 0) == 0 or _looks_like_greeting(incoming_text):
-				response_text = (
-					f"Hi {message.customer_name}, thank you for reaching out to us, "
-					"kindly assist us with the business name and whatever product you are trying to buy."
-				)
-				_send_whatsapp_message(
-					phone_number_id=integration.phone_number_id,
-					to_phone=message.from_phone,
-					text=response_text,
-					access_token=integration.access_token,
-				)
-				message.processed = True
-				message.response_text = response_text
-				message.response_sent_at = datetime.now()
-				message.save(ignore_permissions=True)
-				_update_conversation(
-					conversation_name=conversation.name,
-					last_message=incoming_text,
-					customer_name=message.customer_name,
-				)
-				return
-
-			# After the initial ask, treat incoming text as business selection and match fuzzily.
-			# Also understand replies like "first one" or "2" from previous suggestions.
-			possible_business = _resolve_business_selection_from_previous_prompt(
-				conversation_name=conversation.name,
-				user_text=incoming_text,
-			)
-			if not possible_business:
-				possible_business = _find_business_by_name(incoming_text)
-			if not possible_business:
-				if not _has_any_business_records():
-					response_text = (
-						"I cannot find any Business profiles configured yet. "
-						"Please ask the admin to create at least one Business record first."
-					)
-				elif _looks_like_greeting(incoming_text) or _looks_like_purchase_intent(incoming_text):
-					response_text = (
-						"Thanks for your message. To continue, please share the business name "
-						"you want to buy from."
-					)
-				else:
-					response_text = (
-						"Please share the business name you want to buy from so I can assist you better."
-					)
-				_send_whatsapp_message(
-					phone_number_id=integration.phone_number_id,
-					to_phone=message.from_phone,
-					text=response_text,
-					access_token=integration.access_token,
-				)
-				message.processed = True
-				message.response_text = response_text
-				message.response_sent_at = datetime.now()
-				message.save(ignore_permissions=True)
-				_update_conversation(
-					conversation_name=conversation.name,
-					last_message=incoming_text,
-					customer_name=message.customer_name,
-				)
-				return
-
-			# Business matched: persist and send one-time welcome template.
-			conversation.business = possible_business
-			if conversation_has_assignment_field:
-				conversation.business_assigned_at = datetime.now()
-			conversation.save(ignore_permissions=True)
-
-			context = get_business_context(
-				business_name=possible_business,
-				integration_name=message.integration,
-			)
-			business_label = context.get("business_name") or possible_business
-			business_desc = (context.get("business_description") or "our products and services").strip()
-			response_text = (
-				f"Welcome to {business_label}. We handle {business_desc}. "
-				"What would you like assistance with today?"
-			)
+		if not users:
+			response_text = "I couldn't find a Tookio Shop merchant account associated with this phone number."
 			_send_whatsapp_message(
 				phone_number_id=integration.phone_number_id,
 				to_phone=message.from_phone,
@@ -174,15 +213,18 @@ def process_whatsapp_message(message_id):
 			message.response_text = response_text
 			message.response_sent_at = datetime.now()
 			message.save(ignore_permissions=True)
-			_update_conversation(
-				conversation_name=conversation.name,
-				last_message=incoming_text,
-				customer_name=message.customer_name,
-			)
 			return
+
+		merchant_user = users[0]
 		
-		# Now we have a business assigned. Proceed with normal AI processing.
-		business_name = conversation.business
+		# Set execution context to the merchant! This securely scopes all ORM queries.
+		frappe.set_user(merchant_user.email)
+		frappe.logger().info(f"WhatsApp Session Context Switched to User: {merchant_user.email}")
+		
+		# Find all shops (Companies) the user owns/has access to
+		# Filter by their short phone number so admins don't get everyone's shops
+		shops = frappe.get_all("Shop", filters={"mobile_number": ["like", f"%{short_phone}"]}, fields=["name", "shop_name", "mobile_number"], limit_page_length=50)
+		shop_names = [s.shop_name for s in shops]
 		
 		gemini_config = _get_gemini_config(integration)
 		if not gemini_config:
@@ -193,78 +235,84 @@ def process_whatsapp_message(message_id):
 			model=gemini_config["model"],
 			temperature=gemini_config["temperature"],
 		)
-
-		# Fetch business context using the assigned business name
-		business_context = get_business_context(
-			business_name=business_name,
-			integration_name=message.integration,
+		
+		# Instead of get_business_context, we build a native prompt
+		system_prompt = (
+			f"You are the Tookio Shop AI Assistant for the merchant {merchant_user.full_name}. "
+			f"You help them manage their business directly from WhatsApp. "
+			f"The merchant currently owns/manages the following shops: {', '.join(shop_names) if shop_names else 'None'}. "
+			"When performing actions, if the merchant has multiple shops and hasn't specified which one, ask them to clarify.\n\n"
+			"CRITICAL INSTRUCTIONS:\n"
+			"1. You are strictly a Tookio Shop Assistant. DO NOT answer questions or engage in conversations that are completely unrelated to managing their shop, inventory, sales, or Tookio platform features.\n"
+			"2. If asked about unrelated topics (e.g., coding, general knowledge, other platforms), politely refuse and remind them of your purpose.\n"
+			"3. FORMATTING: Always use clean, human-readable formatting. Do NOT use markdown asterisks (*). Use bullet points or numbered lists when listing items. Keep paragraphs short and scannable for WhatsApp readability."
 		)
 		
-		# Fetch product catalogue from Google Sheets
-		product_info = get_product_catalogue(
-			business_context.get("google_sheet_id", ""),
-			business_context.get("google_sheet_range", ""),
-			integration_name=message.integration,
-			api_key=business_context.get("google_api_key", ""),
-		)
-		
-		# Check if this is the first message TO THIS BUSINESS (message_count == 1)
-		is_first_msg = conversation.message_count == 0
-		
-		# Build system prompt with business context
-		system_prompt = build_ai_system_prompt(business_context, product_info, is_first_message=is_first_msg)
-		
-		recent_messages = _get_recent_messages(conversation.name)
-		
-		# Build the full prompt combining system prompt and user message
-		prompt = _build_prompt(
-			system_prompt=system_prompt,
-			customer_message=incoming_text,
-			customer_name=message.customer_name,
-			conversation_history=recent_messages,
-		)
+		# Get recent messages structured for Gemini
+		messages = _get_recent_messages(conversation.name, limit=6)
+		# Append current message
+		messages.append({
+			"role": "user", 
+			"parts": [{"text": incoming_text}]
+		})
 
-		# Check if handoff is needed before calling Gemini
-		business = frappe.get_doc("Business", business_name) if business_name else None
-		handoff_reason = _check_handoff_trigger(incoming_text, business)
-
-		if handoff_reason:
-			# Trigger handoff instead of AI response
-			_create_handoff(
-				business_name=business_name,
-				conversation_name=conversation.name,
-				message_id=message_id,
-				reason=handoff_reason,
-				customer_message=incoming_text,
+		# --- TOOL EXECUTION LOOP ---
+		ai_text = ""
+		loop_count = 0
+		MAX_LOOPS = 3
+		while loop_count < MAX_LOOPS:
+			loop_count += 1
+			
+			ai_response = gemini.generate_response(
+				messages=messages,
+				system_instruction=system_prompt,
+				tools=get_gemini_tools()
 			)
-			# Notify customer that we're getting help
-			_send_whatsapp_message(
-				phone_number_id=integration.phone_number_id,
-				to_phone=message.from_phone,
-				text="I'm getting the business owner to help with this. Please hold on...",
-				access_token=integration.access_token,
-			)
-			return
+			if not ai_response:
+				frappe.log_error("Gemini failed to generate response", f"Message {message_id}")
+				return
 
-		ai_response = gemini.generate_response(
-			prompt,
-			max_tokens=business_context.get("ai_max_reply_length", 100),
-			timeout=gemini_config["timeout_seconds"],
-		)
-		if not ai_response:
-			frappe.log_error("Gemini failed to generate response", f"Message {message_id}")
-			return
+			if ai_response.get("type") == "text":
+				ai_text = ai_response.get("text")
+				break
+			
+			elif ai_response.get("type") == "functionCall":
+				call = ai_response.get("call")
+				fn_name = call.get("name")
+				args = call.get("args", {})
+				
+				result_str = ""
+				try:
+					if fn_name == "check_inventory":
+						result_str = check_inventory(**args)
+					elif fn_name == "create_quick_sale":
+						result_str = create_quick_sale(**args)
+					else:
+						result_str = f"Function {fn_name} not found."
+				except Exception as e:
+					result_str = f"Error executing {fn_name}: {str(e)}"
+				
+				messages.append({
+					"role": "model",
+					"parts": ai_response.get("parts", [{"functionCall": call}])
+				})
+				messages.append({
+					"role": "function", # Gemini specifically expects 'function' role for responses
+					"parts": [{"functionResponse": {"name": fn_name, "response": {"name": fn_name, "content": result_str}}}]
+				})
+		else:
+			ai_text = "I'm having some trouble processing this right now."
 
 		success = _send_whatsapp_message(
 			phone_number_id=integration.phone_number_id,
 			to_phone=message.from_phone,
-			text=ai_response,
+			text=ai_text,
 			access_token=integration.access_token,
 		)
 
 		if success:
 			message.processed = True
-			message.response_text = ai_response
+			message.response_text = ai_text
 			message.response_sent_at = datetime.now()
 			message.save(ignore_permissions=True)
 
@@ -311,66 +359,25 @@ def _get_or_create_conversation(integration, customer_phone, customer_name=None)
 
 
 def _get_gemini_config(integration):
-	"""Return Gemini credentials and generation settings."""
-	profile_name = integration.get("gemini_profile")
-	if profile_name:
-		try:
-			profile = frappe.get_doc("Gemini Profile", profile_name)
-			if not profile.enabled:
-				frappe.log_error(
-					"Gemini profile disabled",
-					f"Gemini Profile {profile_name} is disabled",
-				)
-				return None
-
-			return {
-				"api_key": profile.api_key,
-				"model": profile.model or "gemini-1.5-flash",
-				"temperature": profile.temperature if profile.temperature is not None else 0.7,
-				"max_output_tokens": profile.max_output_tokens or 150,
-				"timeout_seconds": profile.timeout_seconds or 30,
-			}
-		except Exception as e:
-			frappe.log_error("Gemini profile lookup failed", str(e))
-			return None
-
-	default_profile = frappe.get_all(
-		"Gemini Profile",
-		filters={"enabled": 1, "is_default": 1},
-		fields=["name"],
-		order_by="modified desc",
-		limit_page_length=1,
-	)
-	if default_profile:
-		try:
-			profile = frappe.get_doc("Gemini Profile", default_profile[0]["name"])
-			return {
-				"api_key": profile.api_key,
-				"model": profile.model or "gemini-1.5-flash",
-				"temperature": profile.temperature if profile.temperature is not None else 0.7,
-				"max_output_tokens": profile.max_output_tokens or 150,
-				"timeout_seconds": profile.timeout_seconds or 30,
-			}
-		except Exception as e:
-			frappe.log_error("Default Gemini profile lookup failed", str(e))
-			return None
-
+	"""Return Gemini credentials and generation settings natively from integration."""
 	api_key = integration.get("gemini_api_key") or frappe.conf.get("gemini_api_key")
 	if not api_key:
-		frappe.log_error("Gemini API key missing", "Set a Gemini Profile or gemini_api_key on the integration")
+		frappe.log_error(
+			"Gemini API key missing",
+			f"WhatsApp Integration {integration.name} has no Gemini API Key",
+		)
 		return None
 
 	return {
 		"api_key": api_key,
-		"model": "gemini-1.5-flash",
-		"temperature": 0.7,
-		"max_output_tokens": 150,
-		"timeout_seconds": 30,
+		"model": integration.get("gemini_model") or "gemini-flash-lite-latest",
+		"temperature": 0.5,
+		"max_output_tokens": 500,
 	}
 
 
-def _get_recent_messages(conversation_name, limit=4):
-	"""Return a compact summary of the latest message thread for context."""
+def _get_recent_messages(conversation_name, limit=6):
+	"""Return a structured summary of the latest message thread for context."""
 	try:
 		messages = frappe.get_list(
 			"WhatsApp Message",
@@ -381,34 +388,20 @@ def _get_recent_messages(conversation_name, limit=4):
 		)
 
 		if not messages:
-			return ""
+			return []
 
-		lines = []
+		history = []
 		for record in reversed(messages):
 			incoming = record.get("text_content") or ""
 			response = record.get("response_text") or ""
 			if incoming:
-				lines.append(f"Customer: {incoming}")
+				history.append({"role": "user", "parts": [{"text": incoming}]})
 			if response:
-				lines.append(f"Assistant: {response}")
+				history.append({"role": "model", "parts": [{"text": response}]})
 
-		return "\n".join(lines)
+		return history
 	except Exception:
-		return ""
-
-
-def _build_prompt(system_prompt, customer_message, customer_name, conversation_history=""):
-	"""Build the full prompt for Gemini using system prompt + customer message + history."""
-	prompt = system_prompt
-	
-	if conversation_history:
-		prompt += f"\n\nPrevious Conversation:\n{conversation_history}"
-	
-	prompt += f"\n\nCustomer Name: {customer_name}"
-	prompt += f"\nCustomer Message: {customer_message}"
-	prompt += "\n\nRespond in your established tone. Keep it concise and relevant to their question."
-	
-	return prompt
+		return []
 
 
 def _build_customer_message_text(message):

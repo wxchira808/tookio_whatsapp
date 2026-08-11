@@ -9,7 +9,6 @@
  "field_order": [
   "naming_series",
   "integration",
-  "business",
   "customer_phone",
   "column_break_1",
   "customer_name",
@@ -17,9 +16,7 @@
   "section_break_status",
   "conversation_state",
   "last_message",
-  "last_message_at",
-  "column_break_escalation",
-  "escalated_to_user"
+  "last_message_at"
  ],
  "fields": [
   {
@@ -35,12 +32,6 @@
    "label": "Integration",
    "options": "WhatsApp Integration",
    "reqd": 1
-  },
-  {
-   "fieldname": "business",
-   "fieldtype": "Link",
-   "label": "Business",
-   "options": "Business"
   },
   {
    "fieldname": "customer_phone",
@@ -84,16 +75,6 @@
    "fieldname": "last_message_at",
    "fieldtype": "Datetime",
    "label": "Last Message At"
-  },
-  {
-   "fieldname": "column_break_escalation",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "escalated_to_user",
-   "fieldtype": "Link",
-   "label": "Escalated To User",
-   "options": "User"
   }
  ],
  "idx": 1,

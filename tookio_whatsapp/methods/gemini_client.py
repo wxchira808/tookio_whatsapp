@@ -23,48 +23,50 @@ class GeminiClient:
 			return model.replace("models/", "", 1)
 		return model
 	
-	def generate_response(self, prompt, max_tokens=150, timeout=30):
+	def generate_response(self, system_instruction, messages, tools=None, max_tokens=500, timeout=30):
 		"""
-		Call Gemini API and return text response
-		
-		Args:
-			prompt (str): The prompt to send
-			max_tokens (int): Maximum tokens in response
-			timeout (int): Request timeout in seconds
-		
-		Returns:
-			str: Generated text response, or None if error
+		Call Gemini API and return text response or function call
 		"""
-		# Retry on rate limits and server errors with exponential backoff
 		max_attempts = 4
 		backoff_base = 1.0
 		url = f"{self.base_url}/{self.model}:generateContent?key={self.api_key}"
+		
 		payload = {
-			"contents": [
-				{"parts": [{"text": prompt}]}
-			],
+			"systemInstruction": {
+				"parts": [{"text": system_instruction}]
+			},
+			"contents": messages,
 			"generationConfig": {
 				"maxOutputTokens": max_tokens,
 				"temperature": self.temperature
 			}
 		}
+		
+		if tools:
+			payload["tools"] = tools
+		
 		headers = {"Content-Type": "application/json"}
 
 		for attempt in range(1, max_attempts + 1):
 			try:
 				response = requests.post(url, json=payload, headers=headers, timeout=timeout)
-				# Raise for status so we can catch HTTP errors
 				response.raise_for_status()
-
 				result = response.json()
-				# Extract text from response
+				
 				if "candidates" in result and len(result["candidates"]) > 0:
 					candidate = result["candidates"][0]
 					if "content" in candidate and "parts" in candidate["content"]:
 						parts = candidate["content"]["parts"]
-						if len(parts) > 0 and "text" in parts[0]:
-							return parts[0]["text"]
-				# Unexpected format
+						if len(parts) > 0:
+							# Look for functionCall inside parts
+							has_call = False
+							for part in parts:
+								if "functionCall" in part:
+									return {"type": "functionCall", "call": part["functionCall"], "parts": parts}
+							# If no functionCall, return the first text
+							if "text" in parts[0]:
+								return {"type": "text", "text": parts[0]["text"]}
+				
 				frappe.log_error("Gemini returned unexpected response format", str(result))
 				return None
 

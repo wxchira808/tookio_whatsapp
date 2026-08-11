@@ -4,19 +4,25 @@
  "creation": "2026-05-05 13:05:00.181789",
  "docstatus": 0,
  "doctype": "Desktop Icon",
- "hidden": 0,
+ "hidden": 1,
  "icon": "whatsapp",
+ "icon_image": "/files/tookio-high-resolution-logo.png",
  "icon_type": "Link",
  "idx": 0,
  "label": "Tookio WhatsApp",
- "link_to": "Tookio WhatsApp",
+ "link_to": "",
  "link_type": "Workspace Sidebar",
- "modified": "2026-05-05 13:05:00.181789",
+ "modified": "2026-07-25 12:16:53.854176",
  "modified_by": "Administrator",
  "name": "Tookio WhatsApp",
  "owner": "Administrator",
  "parent_icon": "",
  "restrict_removal": 0,
- "roles": [],
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "sidebar": "",
  "standard": 1
 }
